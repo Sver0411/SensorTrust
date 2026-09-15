@@ -1,0 +1,17 @@
+# build output
+build/
+firmware/build/
+
+# ESP-IDF generated files
+firmware/sdkconfig
+firmware/sdkconfig.old
+
+# python
+__pycache__/
+.pytest_cache/
+
+# compiled test binaries
+test_core
+
+# macOS
+.DS_Store

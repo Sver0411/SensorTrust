@@ -1,0 +1,8 @@
+scenario,expected,detected,matched,health_score_min,final_state
+healthy,NONE,NONE,yes,100,HEALTHY
+healthy_dynamic,NONE,NONE,yes,100,HEALTHY
+stuck,STUCK,STUCK,yes,65,DEGRADED
+spike,SPIKE,SPIKE,yes,75,HEALTHY
+drift,DRIFT,DRIFT,yes,75,DEGRADED
+out_of_range,RANGE,RANGE|STUCK|SPIKE,yes,10,FAULT
+missing_data,MISSING,MISSING,yes,45,HEALTHY

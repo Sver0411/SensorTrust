@@ -1,0 +1,664 @@
+/*
+ * SensorTrust v0.1 - host tests for the C core.
+ *
+ * Standalone: no test framework, no dependencies beyond libc/libm.
+ *   cc core/sensor_trust.c tests/test_core.c -o test_core -lm && ./test_core
+ */
+#include "../core/sensor_trust.h"
+
+#include <math.h>
+#include <stdio.h>
+#include <string.h>
+
+/* ------------------------------------------------------------------ */
+/* tiny test harness                                                   */
+/* ------------------------------------------------------------------ */
+
+static int g_tests_run;
+static int g_tests_failed;
+static int g_checks;
+static int g_checks_failed;
+static const char *g_test_name = "";
+
+#define CHECK(cond)                                                          \
+    do {                                                                     \
+        g_checks++;                                                          \
+        if (!(cond)) {                                                       \
+            g_checks_failed++;                                               \
+            printf("    FAIL [%s] %s:%d  %s\n", g_test_name, __FILE__, __LINE__,     \
+                   #cond);                                                       \
+        }                                                                    \
+    } while (0)
+
+static void run_test(const char *name, void (*test_fn)(void))
+{
+    int failures_before = g_checks_failed;
+
+    g_test_name = name;
+    test_fn();
+    g_tests_run++;
+    if (g_checks_failed != failures_before) {
+        g_tests_failed++;
+        printf("not ok %d - %s\n", g_tests_run, name);
+    } else {
+        printf("ok %d - %s\n", g_tests_run, name);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* helpers                                                             */
+/* ------------------------------------------------------------------ */
+
+/* Deterministic, zero-mean, zero-slope noise pattern: period 8, amplitude
+ * +-0.10, largest step 0.05. Not random, so results are reproducible. */
+static float gentle_noise(int index)
+{
+    static const int k_pattern[8] = {4, 5, 6, 7, 6, 5, 4, 3};
+    return ((float)k_pattern[index % 8] - 5.0f) * 0.05f;
+}
+
+static sensor_trust_config_t default_config(void)
+{
+    sensor_trust_config_t config;
+    sensor_trust_default_config(&config);
+    return config;
+}
+
+static sensor_health_result_t feed(sensor_trust_t *ctx, float value, uint64_t timestamp_ms)
+{
+    sensor_sample_t sample;
+    sample.value = value;
+    sample.valid = true;
+    sample.timestamp_ms = timestamp_ms;
+    return sensor_trust_update(ctx, &sample);
+}
+
+static sensor_health_result_t feed_invalid(sensor_trust_t *ctx, uint64_t timestamp_ms)
+{
+    sensor_sample_t sample;
+    sample.value = 0.0f;
+    sample.valid = false;
+    sample.timestamp_ms = timestamp_ms;
+    return sensor_trust_update(ctx, &sample);
+}
+
+typedef struct {
+    uint32_t union_flags;
+    int min_score;
+    int flag_samples;     /* samples whose result contained the watched flag */
+    int first_flag_index; /* -1 when the watched flag never appeared          */
+} run_summary_t;
+
+static run_summary_t run_values(sensor_trust_t *ctx, const float *values, int count,
+                                uint32_t watched_flag)
+{
+    run_summary_t summary;
+    int i;
+
+    summary.union_flags = FAULT_NONE;
+    summary.min_score = SENSOR_TRUST_SCORE_START;
+    summary.flag_samples = 0;
+    summary.first_flag_index = -1;
+
+    for (i = 0; i < count; i++) {
+        sensor_health_result_t result = feed(ctx, values[i], (uint64_t)(i + 1) * 1000u);
+        summary.union_flags |= result.fault_flags;
+        if (result.health_score < summary.min_score) {
+            summary.min_score = result.health_score;
+        }
+        if (watched_flag != FAULT_NONE && (result.fault_flags & watched_flag) != 0u) {
+            summary.flag_samples++;
+            if (summary.first_flag_index < 0) {
+                summary.first_flag_index = i;
+            }
+        }
+    }
+    return summary;
+}
+
+/* ------------------------------------------------------------------ */
+/* tests                                                               */
+/* ------------------------------------------------------------------ */
+
+static void test_config_validation(void)
+{
+    sensor_trust_config_t config = default_config();
+    sensor_trust_config_t bad;
+    sensor_trust_t ctx;
+    sensor_health_result_t result;
+
+    CHECK(sensor_trust_default_config != NULL);
+    CHECK(sensor_trust_config_is_valid(&config));
+    CHECK(!sensor_trust_config_is_valid(NULL));
+
+    bad = config;
+    bad.min_value = 100.0f;
+    bad.max_value = -40.0f;
+    CHECK(!sensor_trust_config_is_valid(&bad));
+
+    bad = config;
+    bad.stuck_window = SENSOR_TRUST_MAX_WINDOW + 1;
+    CHECK(!sensor_trust_config_is_valid(&bad));
+
+    bad = config;
+    bad.drift_window = 1;
+    CHECK(!sensor_trust_config_is_valid(&bad));
+
+    bad = config;
+    bad.missing_limit = 0;
+    CHECK(!sensor_trust_config_is_valid(&bad));
+
+    bad = config;
+    bad.stuck_epsilon = -0.01f;
+    CHECK(!sensor_trust_config_is_valid(&bad));
+
+    bad = config;
+    bad.drift_threshold = 0.0f;
+    CHECK(!sensor_trust_config_is_valid(&bad));
+
+    /* a zero spike threshold is allowed: every change counts as a jump */
+    bad = config;
+    bad.spike_threshold = 0.0f;
+    CHECK(sensor_trust_config_is_valid(&bad));
+
+    /* an invalid configuration must not be accepted silently */
+    bad = config;
+    bad.stuck_window = 0;
+    CHECK(!sensor_trust_init(&ctx, &bad));
+    result = feed(&ctx, 25.0f, 1000u);
+    CHECK(result.health_score == 0);
+    CHECK(result.state == SENSOR_STATE_FAULT);
+
+    CHECK(sensor_trust_init(&ctx, &config));
+}
+
+static void test_uninitialised_context_is_safe(void)
+{
+    sensor_trust_t ctx;
+    sensor_sample_t sample;
+    sensor_health_result_t result;
+
+    memset(&ctx, 0, sizeof(ctx));
+    sample.value = 25.0f;
+    sample.valid = true;
+    sample.timestamp_ms = 1000u;
+
+    result = sensor_trust_last(&ctx);
+    CHECK(result.health_score == 0);
+    CHECK(result.state == SENSOR_STATE_FAULT);
+    CHECK(result.fault_flags == FAULT_MISSING);
+
+    result = sensor_trust_update(&ctx, &sample);
+    CHECK(result.health_score == 0);
+    CHECK(result.state == SENSOR_STATE_FAULT);
+
+    result = sensor_trust_update(NULL, &sample);
+    CHECK(result.health_score == 0);
+    CHECK(result.fault_flags == FAULT_MISSING);
+
+    ctx.last_result.health_score = 7;
+    sensor_trust_reset(NULL); /* must not crash */
+}
+
+static void test_healthy_sequence_stays_healthy(void)
+{
+    sensor_trust_config_t config = default_config();
+    sensor_trust_t ctx;
+    float values[400];
+    run_summary_t summary;
+    int i;
+
+    /* longer than SENSOR_TRUST_MAX_WINDOW, so the ring buffer wraps a few times */
+    for (i = 0; i < 400; i++) {
+        values[i] = 25.0f + gentle_noise(i);
+    }
+    CHECK(sensor_trust_init(&ctx, &config));
+    summary = run_values(&ctx, values, 400, FAULT_NONE);
+
+    CHECK(summary.union_flags == FAULT_NONE);
+    CHECK(summary.min_score == 100);
+
+    CHECK(ctx.last_result.state == SENSOR_STATE_HEALTHY);
+    CHECK(ctx.last_result.health_score == 100);
+    CHECK(strcmp(sensor_trust_state_name(ctx.last_result.state), "HEALTHY") == 0);
+}
+
+static void test_range_error_both_bounds(void)
+{
+    sensor_trust_config_t config = default_config();
+    sensor_trust_t ctx;
+    sensor_health_result_t result;
+
+    /* a humidity-like channel. The spike threshold is raised so that this
+     * test isolates RANGE from the jump detector. */
+    config.min_value = 0.0f;
+    config.max_value = 100.0f;
+    config.spike_threshold = 1000.0f;
+    CHECK(sensor_trust_init(&ctx, &config));
+
+    result = feed(&ctx, 45.0f, 1000u);
+    CHECK(result.fault_flags == FAULT_NONE);
+    CHECK(result.health_score == 100);
+
+    result = feed(&ctx, 135.0f, 2000u);
+    CHECK(result.fault_flags == FAULT_RANGE);
+    CHECK(result.health_score == 45);
+    CHECK(result.state == SENSOR_STATE_FAULT); /* an impossible value is unusable */
+
+    result = feed(&ctx, 45.0f, 3000u);
+    CHECK(result.fault_flags == FAULT_NONE);
+    CHECK(result.health_score == 100);
+
+    result = feed(&ctx, -0.5f, 4000u);
+    CHECK((result.fault_flags & FAULT_RANGE) != 0u);
+
+    /* detectors are independent: a jump into impossible territory carries
+     * both flags, and both penalties apply */
+    config.spike_threshold = 5.0f;
+    CHECK(sensor_trust_init(&ctx, &config));
+    feed(&ctx, 45.0f, 1000u);
+    result = feed(&ctx, 135.0f, 2000u);
+    CHECK((result.fault_flags & FAULT_RANGE) != 0u);
+    CHECK((result.fault_flags & FAULT_SPIKE) != 0u);
+    CHECK(result.fault_flags == (FAULT_RANGE | FAULT_SPIKE));
+    CHECK(result.health_score == 20); /* 100 - 55 - 25 */
+    CHECK(result.state == SENSOR_STATE_FAULT);
+}
+
+static void test_stuck_detected_after_full_window(void)
+{
+    sensor_trust_config_t config = default_config();
+    sensor_trust_t ctx;
+    run_summary_t summary;
+    float values[40];
+    int i;
+    sensor_health_result_t result;
+
+    config.stuck_window = 20;
+    config.stuck_epsilon = 0.01f;
+    CHECK(sensor_trust_init(&ctx, &config));
+    for (i = 0; i < 40; i++) {
+        values[i] = 25.213f; /* frozen register value */
+    }
+
+    for (i = 0; i < 19; i++) {
+        result = feed(&ctx, values[i], (uint64_t)(i + 1) * 1000u);
+        CHECK((result.fault_flags & FAULT_STUCK) == 0u);
+    }
+    result = feed(&ctx, values[19], 20000u);
+    CHECK((result.fault_flags & FAULT_STUCK) != 0u);
+    CHECK(result.health_score == 65);
+    CHECK(result.state == SENSOR_STATE_DEGRADED);
+
+    /* a long frozen run stays STUCK and never drifts or spikes */
+    summary = run_values(&ctx, values, 40, FAULT_STUCK);
+    CHECK(summary.union_flags == FAULT_STUCK);
+    CHECK(summary.min_score == 65);
+}
+
+static void test_stuck_ignores_noisy_signal(void)
+{
+    sensor_trust_config_t config = default_config();
+    sensor_trust_t ctx;
+    float values[200];
+    run_summary_t summary;
+    int i;
+
+    config.stuck_window = 20;
+    config.stuck_epsilon = 0.01f;
+    for (i = 0; i < 200; i++) {
+        /* a stable but genuinely moving environment: +-0.10 around 25 C */
+        values[i] = 25.0f + gentle_noise(i);
+    }
+    CHECK(sensor_trust_init(&ctx, &config));
+    summary = run_values(&ctx, values, 200, FAULT_STUCK);
+    CHECK(summary.union_flags == FAULT_NONE);
+    CHECK(summary.min_score == 100);
+}
+
+static void test_spike_isolated_jump_confirmed(void)
+{
+    sensor_trust_config_t config = default_config();
+    sensor_trust_t ctx;
+    float values[12];
+    run_summary_t summary;
+    int i;
+
+    config.spike_threshold = 3.0f;
+    for (i = 0; i < 12; i++) {
+        values[i] = 25.0f;
+    }
+    values[5] = 61.0f; /* single-sample excursion, returned on the next sample */
+
+    CHECK(sensor_trust_init(&ctx, &config));
+    summary = run_values(&ctx, values, 12, FAULT_SPIKE);
+
+    CHECK((summary.union_flags & FAULT_SPIKE) != 0u);
+    CHECK(summary.flag_samples == 2);          /* the jump and the return */
+    CHECK(summary.first_flag_index == 5);
+    CHECK(summary.min_score == 75);
+    CHECK(ctx.spike_confirmed_count == 1);
+    CHECK(ctx.last_result.fault_flags == FAULT_NONE); /* back to normal */
+    CHECK(ctx.last_result.health_score == 100);
+}
+
+static void test_step_change_is_not_a_spike(void)
+{
+    sensor_trust_config_t config = default_config();
+    sensor_trust_t ctx;
+    float values[20];
+    run_summary_t summary;
+    int i;
+
+    config.spike_threshold = 3.0f;
+    config.stuck_window = 20;
+    config.drift_window = 24; /* larger than the sequence: no drift verdict */
+    for (i = 0; i < 20; i++) {
+        values[i] = (i < 10) ? 25.0f : 61.0f;
+    }
+
+    CHECK(sensor_trust_init(&ctx, &config));
+    summary = run_values(&ctx, values, 20, FAULT_SPIKE);
+
+    /* a level change is reported once, then accepted as the new level */
+    CHECK(summary.flag_samples == 1);
+    CHECK(summary.first_flag_index == 10);
+    CHECK(summary.union_flags == FAULT_SPIKE);
+    CHECK(ctx.last_result.fault_flags == FAULT_NONE);
+    CHECK(ctx.spike_confirmed_count == 0);
+}
+
+static void test_spike_uses_last_valid_value_across_gap(void)
+{
+    sensor_trust_config_t config = default_config();
+    sensor_trust_t ctx;
+    sensor_health_result_t result;
+
+    config.spike_threshold = 3.0f;
+    config.missing_limit = 10; /* tolerate the gap in this test */
+    CHECK(sensor_trust_init(&ctx, &config));
+
+    feed(&ctx, 25.0f, 1000u);
+    feed(&ctx, 25.0f, 2000u);
+    feed_invalid(&ctx, 3000u);
+    feed_invalid(&ctx, 4000u);
+    result = feed(&ctx, 25.0f, 5000u);
+    CHECK(result.fault_flags == FAULT_NONE);
+    CHECK(result.health_score == 100);
+
+    result = feed(&ctx, 61.0f, 6000u); /* compared against 25, not against 0 */
+    CHECK((result.fault_flags & FAULT_SPIKE) != 0u);
+}
+
+static void test_drift_detected_on_sustained_ramp(void)
+{
+    sensor_trust_config_t config = default_config();
+    sensor_trust_t ctx;
+    float values[200];
+    run_summary_t summary;
+    int i;
+
+    config.drift_window = 24;
+    config.drift_threshold = 0.01f;
+    for (i = 0; i < 200; i++) {
+        values[i] = 25.0f + 0.02f * (float)i; /* +0.02 per sample, no noise */
+    }
+    CHECK(sensor_trust_init(&ctx, &config));
+    summary = run_values(&ctx, values, 200, FAULT_DRIFT);
+
+    CHECK((summary.union_flags & FAULT_DRIFT) != 0u);
+    CHECK(summary.min_score == 75);
+    CHECK(summary.first_flag_index >= config.drift_window);
+    CHECK(summary.first_flag_index <= 2 * config.drift_window);
+    CHECK(ctx.last_result.state == SENSOR_STATE_DEGRADED); /* still drifting */
+}
+
+static void test_drift_not_detected_on_short_ramp(void)
+{
+    sensor_trust_config_t config = default_config();
+    sensor_trust_t ctx;
+    float values[120];
+    run_summary_t summary;
+    int i;
+
+    config.drift_window = 24;
+    config.drift_threshold = 0.01f;
+
+    /* a quick 1 C warm-up over 20 samples, then a stable but live reading:
+     * a real change that lasts less than one window is not reported as drift */
+    for (i = 0; i < 120; i++) {
+        values[i] = (i < 20) ? 25.0f + 0.05f * (float)i : 26.0f + gentle_noise(i);
+    }
+    CHECK(sensor_trust_init(&ctx, &config));
+    summary = run_values(&ctx, values, 120, FAULT_DRIFT);
+    CHECK((summary.union_flags & FAULT_DRIFT) == 0u);
+    CHECK(ctx.last_result.fault_flags == FAULT_NONE);
+    CHECK(ctx.last_result.health_score == 100);
+
+    /* a slow trend that stays below the drift threshold is not drift either:
+     * 0.008 per sample over 120 samples is a perfectly plausible environment */
+    for (i = 0; i < 120; i++) {
+        values[i] = 25.0f + 0.008f * (float)i;
+    }
+    CHECK(sensor_trust_init(&ctx, &config));
+    summary = run_values(&ctx, values, 120, FAULT_DRIFT);
+    CHECK((summary.union_flags & FAULT_DRIFT) == 0u);
+    CHECK(ctx.last_result.fault_flags == FAULT_NONE);
+}
+
+static void test_missing_detected_after_limit_and_clears_on_recovery(void)
+{
+    sensor_trust_config_t config = default_config();
+    sensor_trust_t ctx;
+    sensor_sample_t sample;
+    sensor_health_result_t result;
+
+    config.missing_limit = 3;
+    CHECK(sensor_trust_init(&ctx, &config));
+
+    result = feed(&ctx, 25.0f, 1000u);
+    CHECK(result.fault_flags == FAULT_NONE);
+
+    result = feed_invalid(&ctx, 2000u);
+    CHECK(result.fault_flags == FAULT_NONE);
+    result = feed_invalid(&ctx, 3000u);
+    CHECK(result.fault_flags == FAULT_NONE);
+    result = feed_invalid(&ctx, 4000u);
+    CHECK((result.fault_flags & FAULT_MISSING) != 0u);
+    CHECK(result.health_score == 45);
+    CHECK(result.state == SENSOR_STATE_FAULT); /* no usable data at all */
+
+    result = feed(&ctx, 25.0f, 5000u); /* recovery */
+    CHECK(result.fault_flags == FAULT_NONE);
+    CHECK(result.health_score == 100);
+
+    /* NaN and +-Inf are read failures even when the caller sets valid = true */
+    sample.value = NAN;
+    sample.valid = true;
+    sample.timestamp_ms = 6000u;
+    CHECK(sensor_trust_update(&ctx, &sample).fault_flags == FAULT_NONE);
+    sample.value = INFINITY;
+    sample.timestamp_ms = 7000u;
+    sensor_trust_update(&ctx, &sample);
+    sample.value = -INFINITY;
+    sample.timestamp_ms = 8000u;
+    result = sensor_trust_update(&ctx, &sample);
+    CHECK((result.fault_flags & FAULT_MISSING) != 0u);
+    CHECK(result.state == SENSOR_STATE_FAULT);
+}
+
+static void test_stuck_and_range_combine_into_fault(void)
+{
+    sensor_trust_config_t config = default_config();
+    sensor_trust_t ctx;
+    sensor_health_result_t result;
+    float values[10];
+    run_summary_t summary;
+    int i;
+
+    config.min_value = 0.0f;
+    config.max_value = 50.0f;
+    config.spike_threshold = 1.0f;
+    config.stuck_window = 4;
+    config.stuck_epsilon = 0.01f;
+    config.drift_window = 4;
+    config.drift_threshold = 100.0f; /* keep drift out of this test */
+    CHECK(sensor_trust_init(&ctx, &config));
+
+    /* plausible readings first, so nothing is flagged */
+    for (i = 0; i < 6; i++) {
+        values[i] = 25.0f + gentle_noise(i);
+    }
+    /* then the channel freezes on an impossible value */
+    for (i = 6; i < 10; i++) {
+        values[i] = 200.0f;
+    }
+
+    for (i = 0; i < 6; i++) {
+        result = feed(&ctx, values[i], (uint64_t)(i + 1) * 1000u);
+    }
+    CHECK(result.fault_flags == FAULT_NONE);
+    CHECK(result.health_score == 100);
+
+    /* the jump itself is RANGE + SPIKE */
+    result = feed(&ctx, values[6], 7000u);
+    CHECK(result.fault_flags == (FAULT_RANGE | FAULT_SPIKE));
+    CHECK(result.health_score == 20); /* 100 - 55 - 25 */
+
+    /* once the frozen value fills the window it is RANGE + STUCK as well */
+    result = feed(&ctx, values[7], 8000u);
+    result = feed(&ctx, values[8], 9000u);
+    CHECK((result.fault_flags & FAULT_STUCK) == 0u);
+    result = feed(&ctx, values[9], 10000u);
+    CHECK(result.fault_flags == (FAULT_RANGE | FAULT_STUCK));
+    CHECK(result.health_score == 10); /* 100 - 55 - 35 */
+    CHECK(result.state == SENSOR_STATE_FAULT);
+    CHECK(strcmp(sensor_trust_state_name(result.state), "FAULT") == 0);
+    CHECK(result.health_score >= 0); /* clamped, never negative */
+
+    /* all three detectors fired on the same stream */
+    sensor_trust_reset(&ctx);
+    summary = run_values(&ctx, values, 10, FAULT_NONE);
+    CHECK(summary.union_flags == (FAULT_RANGE | FAULT_STUCK | FAULT_SPIKE));
+    CHECK(summary.min_score == 10);
+}
+
+static void test_score_from_flags_is_clamped(void)
+{
+    CHECK(sensor_trust_score_from_flags(FAULT_NONE) == 100);
+    CHECK(sensor_trust_score_from_flags(FAULT_RANGE) == 45);
+    CHECK(sensor_trust_score_from_flags(FAULT_MISSING) == 45);
+    CHECK(sensor_trust_score_from_flags(FAULT_STUCK) == 65);
+    CHECK(sensor_trust_score_from_flags(FAULT_SPIKE) == 75);
+    CHECK(sensor_trust_score_from_flags(FAULT_DRIFT) == 75);
+    CHECK(sensor_trust_score_from_flags(FAULT_RANGE | FAULT_SPIKE) == 20);
+    CHECK(sensor_trust_score_from_flags(FAULT_STUCK | FAULT_DRIFT) == 40);
+    CHECK(sensor_trust_score_from_flags(FAULT_ALL) == 0);
+    CHECK(sensor_trust_score_from_flags(FAULT_RANGE | FAULT_MISSING) == 0);
+    CHECK(sensor_trust_score_from_flags(FAULT_RANGE | FAULT_STUCK | FAULT_SPIKE) == 0);
+
+    /* a single confirmed fault never leaves the channel HEALTHY */
+    CHECK(sensor_trust_state_from_score(sensor_trust_score_from_flags(FAULT_RANGE)) !=
+          SENSOR_STATE_HEALTHY);
+    CHECK(sensor_trust_state_from_score(sensor_trust_score_from_flags(FAULT_STUCK)) !=
+          SENSOR_STATE_HEALTHY);
+    CHECK(sensor_trust_state_from_score(sensor_trust_score_from_flags(FAULT_SPIKE)) !=
+          SENSOR_STATE_HEALTHY);
+    CHECK(sensor_trust_state_from_score(sensor_trust_score_from_flags(FAULT_DRIFT)) !=
+          SENSOR_STATE_HEALTHY);
+    CHECK(sensor_trust_state_from_score(sensor_trust_score_from_flags(FAULT_MISSING)) !=
+          SENSOR_STATE_HEALTHY);
+}
+
+static void test_state_thresholds_and_names(void)
+{
+    CHECK(sensor_trust_state_from_score(100) == SENSOR_STATE_HEALTHY);
+    CHECK(sensor_trust_state_from_score(80) == SENSOR_STATE_HEALTHY);
+    CHECK(sensor_trust_state_from_score(79) == SENSOR_STATE_DEGRADED);
+    CHECK(sensor_trust_state_from_score(65) == SENSOR_STATE_DEGRADED);
+    CHECK(sensor_trust_state_from_score(50) == SENSOR_STATE_DEGRADED);
+    CHECK(sensor_trust_state_from_score(49) == SENSOR_STATE_FAULT);
+    CHECK(sensor_trust_state_from_score(0) == SENSOR_STATE_FAULT);
+
+    CHECK(strcmp(sensor_trust_state_name(SENSOR_STATE_HEALTHY), "HEALTHY") == 0);
+    CHECK(strcmp(sensor_trust_state_name(SENSOR_STATE_DEGRADED), "DEGRADED") == 0);
+    CHECK(strcmp(sensor_trust_state_name(SENSOR_STATE_FAULT), "FAULT") == 0);
+
+    CHECK(strcmp(sensor_trust_fault_token(FAULT_NONE), "NONE") == 0);
+    CHECK(strcmp(sensor_trust_fault_token(FAULT_DRIFT), "DRIFT") == 0);
+    CHECK(strcmp(sensor_trust_fault_token(FAULT_RANGE | FAULT_STUCK), "") == 0);
+
+    {
+        char buffer[64];
+        size_t length;
+
+        length = sensor_trust_format_flags(FAULT_NONE, buffer, sizeof(buffer));
+        CHECK(strcmp(buffer, "NONE") == 0);
+        CHECK(length == 4u);
+
+        length = sensor_trust_format_flags(FAULT_SPIKE | FAULT_DRIFT, buffer, sizeof(buffer));
+        CHECK(strcmp(buffer, "SPIKE|DRIFT") == 0);
+        CHECK(length == 11u);
+
+        /* truncation: the return value is the length that was needed */
+        length = sensor_trust_format_flags(FAULT_RANGE | FAULT_MISSING, buffer, 5);
+        CHECK(length == 13u);
+        CHECK(strcmp(buffer, "RANG") == 0);
+    }
+}
+
+static void test_reset_clears_detection_state(void)
+{
+    sensor_trust_config_t config = default_config();
+    sensor_trust_t ctx;
+    sensor_health_result_t result;
+    int i;
+
+    config.stuck_window = 8;
+    config.stuck_epsilon = 0.01f;
+    CHECK(sensor_trust_init(&ctx, &config));
+    for (i = 0; i < 12; i++) {
+        result = feed(&ctx, 25.0f, (uint64_t)(i + 1) * 1000u);
+    }
+    CHECK((result.fault_flags & FAULT_STUCK) != 0u);
+
+    sensor_trust_reset(&ctx);
+    result = sensor_trust_last(&ctx);
+    CHECK(result.health_score == 100);
+    CHECK(result.state == SENSOR_STATE_HEALTHY);
+    CHECK(result.fault_flags == FAULT_NONE);
+    CHECK(ctx.window_count == 0);
+    CHECK(ctx.has_last_valid == false);
+    CHECK(ctx.spike_confirmed_count == 0);
+    CHECK(ctx.config.stuck_window == 8); /* configuration survives the reset */
+
+    /* the history really is gone: a single sample cannot be STUCK */
+    result = feed(&ctx, 25.0f, 100000u);
+    CHECK(result.fault_flags == FAULT_NONE);
+}
+
+int main(void)
+{
+    run_test("config_validation", test_config_validation);
+    run_test("uninitialised_context_is_safe", test_uninitialised_context_is_safe);
+    run_test("healthy_sequence_stays_healthy", test_healthy_sequence_stays_healthy);
+    run_test("range_error_both_bounds", test_range_error_both_bounds);
+    run_test("stuck_detected_after_full_window", test_stuck_detected_after_full_window);
+    run_test("stuck_ignores_noisy_signal", test_stuck_ignores_noisy_signal);
+    run_test("spike_isolated_jump_confirmed", test_spike_isolated_jump_confirmed);
+    run_test("step_change_is_not_a_spike", test_step_change_is_not_a_spike);
+    run_test("spike_uses_last_valid_value_across_gap",
+             test_spike_uses_last_valid_value_across_gap);
+    run_test("drift_detected_on_sustained_ramp", test_drift_detected_on_sustained_ramp);
+    run_test("drift_not_detected_on_short_ramp", test_drift_not_detected_on_short_ramp);
+    run_test("missing_detected_after_limit_and_clears_on_recovery",
+             test_missing_detected_after_limit_and_clears_on_recovery);
+    run_test("stuck_and_range_combine_into_fault", test_stuck_and_range_combine_into_fault);
+    run_test("score_from_flags_is_clamped", test_score_from_flags_is_clamped);
+    run_test("state_thresholds_and_names", test_state_thresholds_and_names);
+    run_test("reset_clears_detection_state", test_reset_clears_detection_state);
+
+    printf("\n%d tests, %d passed, %d failed (%d checks)\n", g_tests_run,
+           g_tests_run - g_tests_failed, g_tests_failed, g_checks);
+    return (g_tests_failed == 0) ? 0 : 1;
+}

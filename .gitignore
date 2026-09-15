@@ -15,3 +15,6 @@ test_core
 
 # macOS
 .DS_Store
+
+# agent workspace data
+.workbuddy/

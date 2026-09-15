@@ -1,5 +1,7 @@
 # SensorTrust
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 SensorTrust is a small embedded sensor-health checker that detects stuck values, impossible ranges, sudden spikes, sustained drift and missing data, then converts those signals into a simple health state and score.
 
 It answers one question about one sensor channel:
@@ -281,6 +283,7 @@ SensorTrust/
 │   ├── test_core.c           # 16 C tests for the core
 │   └── test_simulator.py     # 7 Python tests for the simulator pipeline
 ├── README.md
+├── README.zh-CN.md
 └── LICENSE
 ```
 

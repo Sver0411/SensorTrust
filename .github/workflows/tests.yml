@@ -1,0 +1,32 @@
+name: tests
+
+# One job, one purpose: prove the v0.1 core and the simulator plumbing still
+# work on a clean machine. pytest also compiles and runs tests/test_core.c
+# (see tests/test_simulator.py::test_c_host_tests_pass), so this single step
+# covers both the C core and the Python side.
+#
+# Deliberately absent: build matrix, Docker, ESP-IDF, coverage uploads,
+# release automation. The ESP32 build is verified by hand, not here.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: python -m pip install --upgrade pytest
+
+      - name: Show the C toolchain
+        run: cc --version
+
+      - name: Run the tests (C core + simulator)
+        run: python -m pytest tests/ -v

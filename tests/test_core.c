@@ -30,6 +30,10 @@ static const char *g_test_name = "";
         }                                                                    \
     } while (0)
 
+/* Filler byte for the guard region behind a buffer under test: if a function
+ * writes past the size it was given, it has to show up here. */
+#define GUARD_BYTE 0xA5
+
 static void run_test(const char *name, void (*test_fn)(void))
 {
     int failures_before = g_checks_failed;
@@ -89,8 +93,13 @@ typedef struct {
     int first_flag_index; /* -1 when the watched flag never appeared          */
 } run_summary_t;
 
-static run_summary_t run_values(sensor_trust_t *ctx, const float *values, int count,
-                                uint32_t watched_flag)
+/* Replays a value list at a caller-chosen sampling interval. The interval has
+ * to be controllable because the DRIFT slope is measured against real time:
+ * feeding the same physical trend at 1 s, 2 s and 5 s must give the same
+ * verdict, and that can only be checked if the interval is a parameter. */
+static run_summary_t run_values_at_interval(sensor_trust_t *ctx, const float *values,
+                                            int count, uint64_t interval_ms,
+                                            uint32_t watched_flag)
 {
     run_summary_t summary;
     int i;
@@ -101,7 +110,8 @@ static run_summary_t run_values(sensor_trust_t *ctx, const float *values, int co
     summary.first_flag_index = -1;
 
     for (i = 0; i < count; i++) {
-        sensor_health_result_t result = feed(ctx, values[i], (uint64_t)(i + 1) * 1000u);
+        sensor_health_result_t result =
+            feed(ctx, values[i], (uint64_t)(i + 1) * interval_ms);
         summary.union_flags |= result.fault_flags;
         if (result.health_score < summary.min_score) {
             summary.min_score = result.health_score;
@@ -114,6 +124,13 @@ static run_summary_t run_values(sensor_trust_t *ctx, const float *values, int co
         }
     }
     return summary;
+}
+
+/* The common case: 1 Hz, which is what the simulator and the demo use. */
+static run_summary_t run_values(sensor_trust_t *ctx, const float *values, int count,
+                                uint32_t watched_flag)
+{
+    return run_values_at_interval(ctx, values, count, 1000u, watched_flag);
 }
 
 /* ------------------------------------------------------------------ */
@@ -172,6 +189,85 @@ static void test_config_validation(void)
     CHECK(sensor_trust_init(&ctx, &config));
 }
 
+/*
+ * Every float field has to be finite. NaN compares false against everything,
+ * so a range check alone would let it through; an infinity silently disables
+ * (or saturates) the detector it belongs to. Only the genuinely distinct
+ * boundaries are covered here - five fields times the three non-finite values
+ * - rather than padding the count with repeats.
+ */
+static void test_config_rejects_non_finite_values(void)
+{
+    sensor_trust_config_t good = default_config();
+    sensor_trust_config_t bad;
+
+    CHECK(sensor_trust_config_is_valid(&good));
+
+    /* NaN */
+    bad = good;
+    bad.min_value = NAN;
+    CHECK(!sensor_trust_config_is_valid(&bad));
+    bad = good;
+    bad.max_value = NAN;
+    CHECK(!sensor_trust_config_is_valid(&bad));
+    bad = good;
+    bad.stuck_epsilon = NAN;
+    CHECK(!sensor_trust_config_is_valid(&bad));
+    bad = good;
+    bad.spike_threshold = NAN;
+    CHECK(!sensor_trust_config_is_valid(&bad));
+    bad = good;
+    bad.drift_threshold = NAN;
+    CHECK(!sensor_trust_config_is_valid(&bad));
+
+    /* +Inf */
+    bad = good;
+    bad.min_value = INFINITY;
+    CHECK(!sensor_trust_config_is_valid(&bad));
+    bad = good;
+    bad.max_value = INFINITY;
+    CHECK(!sensor_trust_config_is_valid(&bad));
+    bad = good;
+    bad.stuck_epsilon = INFINITY;
+    CHECK(!sensor_trust_config_is_valid(&bad));
+    bad = good;
+    bad.spike_threshold = INFINITY;
+    CHECK(!sensor_trust_config_is_valid(&bad));
+    bad = good;
+    bad.drift_threshold = INFINITY;
+    CHECK(!sensor_trust_config_is_valid(&bad));
+
+    /* -Inf */
+    bad = good;
+    bad.min_value = -INFINITY;
+    CHECK(!sensor_trust_config_is_valid(&bad));
+    bad = good;
+    bad.max_value = -INFINITY;
+    CHECK(!sensor_trust_config_is_valid(&bad));
+    bad = good;
+    bad.stuck_epsilon = -INFINITY;
+    CHECK(!sensor_trust_config_is_valid(&bad));
+    bad = good;
+    bad.spike_threshold = -INFINITY;
+    CHECK(!sensor_trust_config_is_valid(&bad));
+    bad = good;
+    bad.drift_threshold = -INFINITY;
+    CHECK(!sensor_trust_config_is_valid(&bad));
+
+    /* an infinite range is not a licence to accept every reading */
+    {
+        sensor_trust_t ctx;
+        sensor_health_result_t result;
+
+        bad = good;
+        bad.max_value = INFINITY;
+        CHECK(!sensor_trust_init(&ctx, &bad));
+        result = feed(&ctx, 1000.0f, 1000u);
+        CHECK(result.health_score == 0);
+        CHECK(result.state == SENSOR_STATE_FAULT);
+    }
+}
+
 static void test_uninitialised_context_is_safe(void)
 {
     sensor_trust_t ctx;
@@ -198,6 +294,74 @@ static void test_uninitialised_context_is_safe(void)
 
     ctx.last_result.health_score = 7;
     sensor_trust_reset(NULL); /* must not crash */
+}
+
+/*
+ * A reset restarts a running channel. It must never turn a context that was
+ * never usable into one that looks initialised: that would hand the caller a
+ * channel with no valid configuration, and every later sample would then be
+ * judged against garbage thresholds.
+ */
+static void test_reset_on_uninitialised_context_is_safe(void)
+{
+    sensor_trust_config_t config = default_config();
+    sensor_trust_config_t bad = config;
+    sensor_trust_t ctx;
+    sensor_health_result_t result;
+
+    /* (a) a zeroed context was never initialised. Resetting it must leave it
+     * unusable instead of fabricating a working channel. */
+    memset(&ctx, 0, sizeof(ctx));
+    sensor_trust_reset(&ctx);
+    CHECK(ctx.initialised == false);
+    result = sensor_trust_last(&ctx);
+    CHECK(result.health_score == 0);
+    CHECK(result.state == SENSOR_STATE_FAULT);
+    CHECK(result.fault_flags == FAULT_MISSING);
+
+    result = feed(&ctx, 25.0f, 1000u);
+    CHECK(result.health_score == 0);
+    CHECK(result.state == SENSOR_STATE_FAULT);
+    CHECK(result.fault_flags == FAULT_MISSING);
+    CHECK(ctx.initialised == false);
+    CHECK(ctx.window_count == 0);
+
+    /* (b) init failed, so reset must not "repair" the context */
+    bad.stuck_window = 0;
+    CHECK(!sensor_trust_init(&ctx, &bad));
+    CHECK(ctx.initialised == false);
+    sensor_trust_reset(&ctx);
+    CHECK(ctx.initialised == false);
+    result = sensor_trust_last(&ctx);
+    CHECK(result.health_score == 0);
+    CHECK(result.state == SENSOR_STATE_FAULT);
+    CHECK(result.fault_flags == FAULT_MISSING);
+    result = feed(&ctx, 25.0f, 1000u);
+    CHECK(result.health_score == 0);
+    CHECK(result.state == SENSOR_STATE_FAULT);
+
+    /* (c) a running context whose configuration was corrupted in place (the
+     * struct is public) is refused too, rather than restarted with NaN */
+    CHECK(sensor_trust_init(&ctx, &config));
+    ctx.config.drift_threshold = NAN;
+    sensor_trust_reset(&ctx);
+    CHECK(ctx.initialised == false);
+    CHECK(sensor_trust_last(&ctx).state == SENSOR_STATE_FAULT);
+
+    /* (d) a genuinely running channel is still restartable and keeps config */
+    CHECK(sensor_trust_init(&ctx, &config));
+    feed(&ctx, 25.0f, 1000u);
+    sensor_trust_reset(&ctx);
+    CHECK(ctx.initialised == true);
+    CHECK(ctx.config.stuck_window == config.stuck_window);
+    CHECK(ctx.window_count == 0);
+    result = sensor_trust_last(&ctx);
+    CHECK(result.health_score == 100);
+    CHECK(result.state == SENSOR_STATE_HEALTHY);
+    CHECK(result.fault_flags == FAULT_NONE);
+
+    /* (e) NULL is ignored */
+    sensor_trust_reset(NULL);
 }
 
 static void test_healthy_sequence_stays_healthy(void)
@@ -342,7 +506,14 @@ static void test_spike_isolated_jump_confirmed(void)
     CHECK(ctx.last_result.health_score == 100);
 }
 
-static void test_step_change_is_not_a_spike(void)
+/*
+ * A real level change is not an isolated excursion: the first sample at the
+ * new level does look like a jump, so it is reported once, but because the
+ * reading never comes back the excursion is never confirmed and the new level
+ * is accepted. Hence the name - it is not that a step change cannot look like
+ * a spike, it is that a step change is flagged once and then accepted.
+ */
+static void test_step_change_is_flagged_once_then_accepted(void)
 {
     sensor_trust_config_t config = default_config();
     sensor_trust_t ctx;
@@ -399,9 +570,11 @@ static void test_drift_detected_on_sustained_ramp(void)
     int i;
 
     config.drift_window = 24;
-    config.drift_threshold = 0.01f;
+    config.drift_threshold = 0.01f; /* 0.01 C per second */
+    /* +0.02 C per second, sampled at 1 Hz, no noise. The verdict has to repeat
+     * for a full drift_window, so it appears after roughly two windows. */
     for (i = 0; i < 200; i++) {
-        values[i] = 25.0f + 0.02f * (float)i; /* +0.02 per sample, no noise */
+        values[i] = 25.0f + 0.02f * (float)i;
     }
     CHECK(sensor_trust_init(&ctx, &config));
     summary = run_values(&ctx, values, 200, FAULT_DRIFT);
@@ -422,7 +595,7 @@ static void test_drift_not_detected_on_short_ramp(void)
     int i;
 
     config.drift_window = 24;
-    config.drift_threshold = 0.01f;
+    config.drift_threshold = 0.01f; /* 0.01 C per second */
 
     /* a quick 1 C warm-up over 20 samples, then a stable but live reading:
      * a real change that lasts less than one window is not reported as drift */
@@ -436,7 +609,8 @@ static void test_drift_not_detected_on_short_ramp(void)
     CHECK(ctx.last_result.health_score == 100);
 
     /* a slow trend that stays below the drift threshold is not drift either:
-     * 0.008 per sample over 120 samples is a perfectly plausible environment */
+     * 0.008 C per second (sampled at 1 Hz) over 120 s is a perfectly
+     * plausible environment */
     for (i = 0; i < 120; i++) {
         values[i] = 25.0f + 0.008f * (float)i;
     }
@@ -444,6 +618,158 @@ static void test_drift_not_detected_on_short_ramp(void)
     summary = run_values(&ctx, values, 120, FAULT_DRIFT);
     CHECK((summary.union_flags & FAULT_DRIFT) == 0u);
     CHECK(ctx.last_result.fault_flags == FAULT_NONE);
+}
+
+/*
+ * The DRIFT slope is measured in value units per second, so the same physical
+ * trend has to be judged the same way whatever the sampling interval is. That
+ * matters because a scheduler (AdaptiveSense) may change the interval at
+ * runtime; with a per-sample slope the drift sensitivity would silently depend
+ * on that scheduling decision.
+ *
+ * The second half is the discriminating case. A 0.008 C/s trend has a
+ * per-sample step of 0.008 at 1 s, 0.016 at 2 s and 0.04 at 5 s. With a
+ * threshold read as "0.01 per sample", the 2 s and 5 s runs would report drift
+ * on a trend that is physically well below the sensitivity.
+ */
+static void test_drift_slope_is_independent_of_sampling_interval(void)
+{
+    static const uint64_t k_intervals_ms[3] = {1000u, 2000u, 5000u};
+    sensor_trust_config_t config = default_config();
+    int first_flag_index[3] = {-1, -1, -1};
+    unsigned int index;
+
+    config.min_value = -40.0f;
+    config.max_value = 85.0f;
+    config.stuck_epsilon = 0.01f;
+    config.stuck_window = 20;
+    config.spike_threshold = 3.0f;
+    config.drift_window = 24;
+    config.drift_threshold = 0.01f; /* 0.01 C per SECOND */
+    config.missing_limit = 3;
+
+    /* the same physical trend, +0.02 C per second, at three intervals: the
+     * per-sample step differs by 5x, the real slope does not */
+    for (index = 0; index < 3u; index++) {
+        sensor_trust_t ctx;
+        run_summary_t summary;
+        float values[120];
+        float seconds_per_sample = (float)k_intervals_ms[index] / 1000.0f;
+        int i;
+
+        for (i = 0; i < 120; i++) {
+            values[i] = 25.0f + 0.02f * seconds_per_sample * (float)i;
+        }
+        CHECK(sensor_trust_init(&ctx, &config));
+        summary = run_values_at_interval(&ctx, values, 120, k_intervals_ms[index],
+                                        FAULT_DRIFT);
+
+        CHECK((summary.union_flags & FAULT_DRIFT) != 0u);
+        CHECK(summary.union_flags == FAULT_DRIFT); /* nothing else fires */
+        first_flag_index[index] = summary.first_flag_index;
+    }
+
+    /* Not just the same verdict: the same NUMBER of samples. The trend has to
+     * fill one window before the streak starts, then hold for drift_window
+     * more verdicts, and none of that counts time. Only the wall-clock
+     * duration of the run differs between the three intervals. */
+    CHECK(first_flag_index[0] == first_flag_index[1]);
+    CHECK(first_flag_index[1] == first_flag_index[2]);
+    CHECK(first_flag_index[0] >= config.drift_window);
+    CHECK(first_flag_index[0] <= 2 * config.drift_window);
+
+    /* 0.008 C per second: below the sensitivity at every interval */
+    for (index = 0; index < 3u; index++) {
+        sensor_trust_t ctx;
+        run_summary_t summary;
+        float values[120];
+        float seconds_per_sample = (float)k_intervals_ms[index] / 1000.0f;
+        int i;
+
+        for (i = 0; i < 120; i++) {
+            values[i] = 25.0f + 0.008f * seconds_per_sample * (float)i;
+        }
+        CHECK(sensor_trust_init(&ctx, &config));
+        summary = run_values_at_interval(&ctx, values, 120, k_intervals_ms[index],
+                                        FAULT_DRIFT);
+        CHECK(summary.union_flags == FAULT_NONE);
+    }
+}
+
+/*
+ * A broken clock must not produce a drift verdict, a division by zero or a
+ * NaN. A stopped or rolling-back timestamp makes a window unusable for the
+ * time-based detector; RANGE, SPIKE and STUCK do not use time at all, so they
+ * keep working on exactly the same samples. No new fault type is introduced
+ * for this: the answer is simply "no drift claimed".
+ */
+static void test_drift_ignores_non_increasing_timestamps(void)
+{
+    sensor_trust_config_t config = default_config();
+    sensor_trust_t ctx;
+    float values[120];
+    sensor_health_result_t result;
+    uint32_t union_flags;
+    int inconsistent;
+    int i;
+
+    /* a threshold so low that a time axis built from the sample index would
+     * certainly report drift on this ramp */
+    config.min_value = -40.0f;
+    config.max_value = 85.0f;
+    config.stuck_epsilon = 0.01f;
+    config.stuck_window = 20;
+    config.spike_threshold = 3.0f;
+    config.drift_window = 24;
+    config.drift_threshold = 0.0001f;
+    config.missing_limit = 3;
+
+    for (i = 0; i < 120; i++) {
+        values[i] = 25.0f + 0.02f * (float)i;
+    }
+
+    /* (a) a clock that never moves */
+    union_flags = FAULT_NONE;
+    inconsistent = 0;
+    CHECK(sensor_trust_init(&ctx, &config));
+    for (i = 0; i < 120; i++) {
+        result = feed(&ctx, values[i], 1700000000000u);
+        union_flags |= result.fault_flags;
+        if (result.health_score != sensor_trust_score_from_flags(result.fault_flags) ||
+            result.health_score < 0 || result.health_score > 100) {
+            inconsistent++;
+        }
+    }
+    CHECK(union_flags == FAULT_NONE);
+    CHECK(inconsistent == 0);
+    CHECK(ctx.last_result.health_score == 100);
+
+    /* (b) a clock that rolls backwards while the value climbs */
+    union_flags = FAULT_NONE;
+    inconsistent = 0;
+    CHECK(sensor_trust_init(&ctx, &config));
+    for (i = 0; i < 120; i++) {
+        result = feed(&ctx, values[i], 1700000000000u - (uint64_t)i * 1000u);
+        union_flags |= result.fault_flags;
+        if (result.health_score != sensor_trust_score_from_flags(result.fault_flags) ||
+            result.health_score < 0 || result.health_score > 100) {
+            inconsistent++;
+        }
+    }
+    CHECK(union_flags == FAULT_NONE);
+    CHECK(inconsistent == 0);
+
+    /* (c) the time-free detectors still work on a stopped clock */
+    config.stuck_window = 8;
+    CHECK(sensor_trust_init(&ctx, &config));
+    for (i = 0; i < 12; i++) {
+        result = feed(&ctx, 25.213f, 5000u);
+    }
+    CHECK(result.fault_flags == FAULT_STUCK);
+    CHECK(result.health_score == 65);
+
+    result = feed(&ctx, 200.0f, 5000u);
+    CHECK((result.fault_flags & FAULT_RANGE) != 0u);
 }
 
 static void test_missing_detected_after_limit_and_clears_on_recovery(void)
@@ -587,23 +913,80 @@ static void test_state_thresholds_and_names(void)
     CHECK(strcmp(sensor_trust_fault_token(FAULT_NONE), "NONE") == 0);
     CHECK(strcmp(sensor_trust_fault_token(FAULT_DRIFT), "DRIFT") == 0);
     CHECK(strcmp(sensor_trust_fault_token(FAULT_RANGE | FAULT_STUCK), "") == 0);
+}
 
-    {
-        char buffer[64];
-        size_t length;
+/*
+ * sensor_trust_format_flags follows the snprintf contract: the return value is
+ * the length of the complete string, however little of it fitted. The failure
+ * mode this guards against is a buffer offset running past the end once a
+ * truncation has happened, so every size is checked against a guard region
+ * that must stay untouched.
+ */
+static void test_format_flags_truncation_is_safe(void)
+{
+    static const uint32_t k_flags[] = {
+        FAULT_NONE,
+        FAULT_RANGE,
+        FAULT_RANGE | FAULT_MISSING,
+        FAULT_RANGE | FAULT_STUCK | FAULT_SPIKE,
+        FAULT_ALL,
+    };
+    static const char *const k_text[] = {
+        "NONE",
+        "RANGE",
+        "RANGE|MISSING",
+        "RANGE|STUCK|SPIKE",
+        "RANGE|STUCK|SPIKE|DRIFT|MISSING",
+    };
+    static const size_t k_lengths[] = {4u, 5u, 13u, 17u, 31u};
+    static const size_t k_sizes[] = {0u, 1u, 2u, 5u, 16u, 32u};
+    const size_t case_count = sizeof(k_flags) / sizeof(k_flags[0]);
+    const size_t size_count = sizeof(k_sizes) / sizeof(k_sizes[0]);
+    size_t c;
+    size_t s;
 
-        length = sensor_trust_format_flags(FAULT_NONE, buffer, sizeof(buffer));
-        CHECK(strcmp(buffer, "NONE") == 0);
-        CHECK(length == 4u);
+    /* A NULL buffer is the documented exception to the length contract: there
+     * is nowhere to write, so the answer is 0 rather than a length the caller
+     * cannot use. The API keeps that behaviour instead of copying snprintf. */
+    CHECK(sensor_trust_format_flags(FAULT_ALL, NULL, 0u) == 0u);
+    CHECK(sensor_trust_format_flags(FAULT_ALL, NULL, 64u) == 0u);
+    CHECK(sensor_trust_format_flags(FAULT_NONE, NULL, 0u) == 0u);
 
-        length = sensor_trust_format_flags(FAULT_SPIKE | FAULT_DRIFT, buffer, sizeof(buffer));
-        CHECK(strcmp(buffer, "SPIKE|DRIFT") == 0);
-        CHECK(length == 11u);
+    for (c = 0; c < case_count; c++) {
+        for (s = 0; s < size_count; s++) {
+            const size_t size = k_sizes[s];
+            char storage[64];
+            size_t length;
+            size_t written;
+            size_t i;
+            bool untouched = true;
 
-        /* truncation: the return value is the length that was needed */
-        length = sensor_trust_format_flags(FAULT_RANGE | FAULT_MISSING, buffer, 5);
-        CHECK(length == 13u);
-        CHECK(strcmp(buffer, "RANG") == 0);
+            memset(storage, GUARD_BYTE, sizeof(storage));
+            length = sensor_trust_format_flags(k_flags[c], storage, size);
+
+            /* the length of the complete string, however little fitted */
+            CHECK(length == k_lengths[c]);
+
+            /* nothing at or beyond `size` was written */
+            for (i = size; i < sizeof(storage); i++) {
+                if ((unsigned char)storage[i] != (unsigned char)GUARD_BYTE) {
+                    untouched = false;
+                }
+            }
+            CHECK(untouched);
+
+            if (size == 0u) {
+                continue; /* no room: no content, and nothing to terminate */
+            }
+            written = strlen(storage);
+            /* Either the whole string is present, or the buffer is filled to
+             * its last byte and terminated there. Never an unterminated
+             * prefix, and never more characters than the size allows. */
+            CHECK(written == length || written == size - 1u);
+            CHECK(written < size);
+            CHECK(strncmp(storage, k_text[c], written) == 0);
+            CHECK(storage[written] == '\0');
+        }
     }
 }
 
@@ -640,22 +1023,31 @@ static void test_reset_clears_detection_state(void)
 int main(void)
 {
     run_test("config_validation", test_config_validation);
+    run_test("config_rejects_non_finite_values", test_config_rejects_non_finite_values);
     run_test("uninitialised_context_is_safe", test_uninitialised_context_is_safe);
+    run_test("reset_on_uninitialised_context_is_safe",
+             test_reset_on_uninitialised_context_is_safe);
     run_test("healthy_sequence_stays_healthy", test_healthy_sequence_stays_healthy);
     run_test("range_error_both_bounds", test_range_error_both_bounds);
     run_test("stuck_detected_after_full_window", test_stuck_detected_after_full_window);
     run_test("stuck_ignores_noisy_signal", test_stuck_ignores_noisy_signal);
     run_test("spike_isolated_jump_confirmed", test_spike_isolated_jump_confirmed);
-    run_test("step_change_is_not_a_spike", test_step_change_is_not_a_spike);
+    run_test("step_change_is_flagged_once_then_accepted",
+             test_step_change_is_flagged_once_then_accepted);
     run_test("spike_uses_last_valid_value_across_gap",
              test_spike_uses_last_valid_value_across_gap);
     run_test("drift_detected_on_sustained_ramp", test_drift_detected_on_sustained_ramp);
     run_test("drift_not_detected_on_short_ramp", test_drift_not_detected_on_short_ramp);
+    run_test("drift_slope_is_independent_of_sampling_interval",
+             test_drift_slope_is_independent_of_sampling_interval);
+    run_test("drift_ignores_non_increasing_timestamps",
+             test_drift_ignores_non_increasing_timestamps);
     run_test("missing_detected_after_limit_and_clears_on_recovery",
              test_missing_detected_after_limit_and_clears_on_recovery);
     run_test("stuck_and_range_combine_into_fault", test_stuck_and_range_combine_into_fault);
     run_test("score_from_flags_is_clamped", test_score_from_flags_is_clamped);
     run_test("state_thresholds_and_names", test_state_thresholds_and_names);
+    run_test("format_flags_truncation_is_safe", test_format_flags_truncation_is_safe);
     run_test("reset_clears_detection_state", test_reset_clears_detection_state);
 
     printf("\n%d tests, %d passed, %d failed (%d checks)\n", g_tests_run,

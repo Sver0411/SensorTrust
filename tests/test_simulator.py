@@ -197,7 +197,13 @@ def test_every_scenario_detects_its_expected_fault(dataset_dir):
         assert report[name]["health_score_min"] < 100
 
     assert report["out_of_range"]["final_state"] == "FAULT"
-    assert report["stuck"]["health_score_min"] < report["spike"]["health_score_min"]
+
+    # Deliberately NOT asserted: that one fault type is always "worse" than
+    # another. The scores differ only because the penalty weights differ
+    # (STUCK 35 > SPIKE 25), which is a tuning choice rather than an API
+    # contract, so a test pinning it would break for a legitimate retune
+    # without protecting any behaviour. What is a contract - a single confirmed
+    # fault never leaving HEALTHY - is covered in tests/test_core.c.
 
 
 def test_report_csv_matches_a_fresh_run(dataset_dir):
@@ -219,6 +225,62 @@ def test_report_csv_matches_a_fresh_run(dataset_dir):
             )
 
 
+def test_replay_delivers_the_dataset_timestamps_to_the_core(dataset_dir):
+    """The DRIFT slope is measured against real time, so the timestamps have to
+    arrive at the core unchanged. The replay tool echoes back the timestamp it
+    actually handed to sensor_trust_update(), which closes the loop:
+    dataset CSV -> parser -> sensor_sample_t -> result row."""
+    replay_tool()
+    for scenario in scenarios.SCENARIOS:
+        rows = runner.replay_dataset(dataset_dir / f"{scenario.name}.csv")
+        assert [row["timestamp_ms"] for row in rows] == [
+            timestamp_ms for timestamp_ms, _, _ in scenario.samples
+        ]
+        assert [row["sample_index"] for row in rows] == list(range(len(rows)))
+
+
+def test_drift_verdict_survives_a_coarser_sampling_interval():
+    """End-to-end version of the interval independence: the same physical
+    trend, written at 2 s per sample instead of 1 s, still has to be reported
+    as DRIFT. The probe dataset lives in build/ so the seven published
+    scenarios stay exactly as they are."""
+    replay_tool()
+
+    source = scenarios.scenario_by_name("drift")
+    interval_ms = 2 * scenarios.SAMPLE_INTERVAL_MS
+    # every other sample, re-stamped at the coarser interval: the per-sample
+    # step doubles, the per-second slope does not change
+    samples = [
+        ((index + 1) * interval_ms, value, valid)
+        for index, (_, value, valid) in enumerate(source.samples[::2])
+    ]
+    probe = scenarios.Scenario(
+        name="drift_at_2s",
+        expected="DRIFT",
+        channel=source.channel,
+        config=source.config,
+        samples=samples,
+    )
+    assert len(probe.samples) > 2 * source.config["drift_window"]
+
+    probe_path = runner.BUILD_DIR / "probe_drift_at_2s.csv"
+    probe_path.parent.mkdir(parents=True, exist_ok=True)
+    probe_path.write_text(generate.render_dataset(probe), encoding="utf-8")
+
+    rows = runner.replay_dataset(probe_path)
+    summary = runner.summarise(probe, rows)
+    assert summary["matched"] == "yes", (
+        f"a 2 s sampling interval changed the verdict: detected {summary['detected']}"
+    )
+    assert summary["detected"] == "DRIFT"
+    assert summary["final_state"] == "DEGRADED"
+
+    # the interval really is what the probe claims, and it is not 1 Hz
+    assert (probe_path.read_text(encoding="utf-8").splitlines()[4]) == (
+        f"# sample_interval_ms: {interval_ms}"
+    )
+
+
 def test_fault_bits_match_the_c_header():
     bits = runner.fault_bits_from_header()
     assert bits == runner.FAULT_BITS, (
@@ -237,4 +299,7 @@ def test_c_host_tests_pass():
     total, passed, failed = (int(group) for group in match.groups())
     assert failed == 0
     assert passed == total
-    assert 15 <= total <= 25
+    # a band, not an exact number: it fails if tests silently disappear or if
+    # the count is padded with near-duplicates, without breaking on every
+    # legitimate addition
+    assert 21 <= total <= 40

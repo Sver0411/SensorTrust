@@ -10,9 +10,9 @@ Streams are deterministic (fixed seeds), 1 Hz.
 Expected tokens
     NONE    nothing suspicious
     RANGE   value outside the configured physical range
-    STUCK   value frozen for a long window
+    STUCK   value frozen for a long window (window counted in samples)
     SPIKE   sudden jump away from the previous value
-    DRIFT   sustained one-directional trend
+    DRIFT   sustained one-directional trend, in value units per second
     MISSING invalid samples (read failure / NaN)
 """
 
@@ -27,6 +27,11 @@ SAMPLE_INTERVAL_MS = 1000
 
 # A BME280-like temperature channel. Nothing about this sensor is hard-coded
 # in the core; it is just the configuration this scenario hands to it.
+#
+# drift_threshold is a slope in value units per SECOND, taken from the sample
+# timestamps, so it does not silently change meaning if the sampling interval
+# changes. These streams are 1 Hz, where "per second" and "per sample" happen
+# to coincide, so the numbers below kept their old values.
 TEMPERATURE_CONFIG: Dict[str, float] = {
     "min_value": -40.0,
     "max_value": 85.0,
@@ -34,7 +39,7 @@ TEMPERATURE_CONFIG: Dict[str, float] = {
     "stuck_window": 20,
     "spike_threshold": 3.0,
     "drift_window": 24,
-    "drift_threshold": 0.01,
+    "drift_threshold": 0.01,  # C per second
     "missing_limit": 3,
 }
 
@@ -46,7 +51,7 @@ HUMIDITY_CONFIG: Dict[str, float] = {
     "stuck_window": 20,
     "spike_threshold": 20.0,
     "drift_window": 24,
-    "drift_threshold": 0.05,
+    "drift_threshold": 0.05,  # %RH per second
     "missing_limit": 3,
 }
 

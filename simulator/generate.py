@@ -17,7 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "simulator"))
 
-from scenarios import SCENARIOS, SAMPLE_INTERVAL_MS, Scenario  # noqa: E402
+from scenarios import SCENARIOS, Scenario  # noqa: E402
 
 DATASET_DIR = ROOT / "results" / "dataset"
 CONFIG_KEY_ORDER = [
@@ -32,6 +32,20 @@ CONFIG_KEY_ORDER = [
 ]
 
 
+def sample_interval_text(scenario: Scenario) -> str:
+    """The interval the dataset was written at, as a self-describing header.
+
+    Derived from the timestamps rather than assumed, so a dataset written at a
+    different rate cannot end up claiming 1 Hz. The core does not read this
+    line (it takes the timestamps themselves), it is there for the reader.
+    """
+    timestamps = [timestamp_ms for timestamp_ms, _, _ in scenario.samples]
+    gaps = {later - earlier for earlier, later in zip(timestamps, timestamps[1:])}
+    if len(gaps) == 1:
+        return str(gaps.pop())
+    return "mixed"
+
+
 def render_dataset(scenario: Scenario) -> str:
     config_text = " ".join(
         f"{key}={scenario.config[key]!r}" for key in CONFIG_KEY_ORDER
@@ -41,7 +55,7 @@ def render_dataset(scenario: Scenario) -> str:
         f"# scenario: {scenario.name}",
         f"# expected: {scenario.expected}",
         f"# channel: {scenario.channel}",
-        f"# sample_interval_ms: {SAMPLE_INTERVAL_MS}",
+        f"# sample_interval_ms: {sample_interval_text(scenario)}",
         f"#config: {config_text}",
         "timestamp_ms,value,valid",
     ]

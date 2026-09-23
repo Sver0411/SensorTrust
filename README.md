@@ -269,6 +269,21 @@ baseline and five repeated episodes of each fault.
 
 ## Run it
 
+On macOS, create the test environment inside this checkout. ESP-IDF itself
+can stay in `~/esp/esp-idf` with its Python environment in `~/.espressif`;
+neither path needs an external drive:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install pytest
+.venv/bin/python -m pytest tests/ -v
+
+export IDF_PYTHON_ENV_PATH="$HOME/.espressif/python_env/idf5.4_py3.13_env"
+export ESP_PYTHON="$IDF_PYTHON_ENV_PATH/bin/python"
+source "$HOME/esp/esp-idf/export.sh"
+cd firmware && idf.py build
+```
+
 ```bash
 # 1. synthetic scenarios -> results/dataset/*.csv
 python simulator/generate.py

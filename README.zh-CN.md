@@ -200,6 +200,20 @@ Core in firmware: core/sensor_trust.c is compiled into the main component
 
 ## 运行方式
 
+在 macOS 本机检出目录中建立测试环境。ESP-IDF 位于 `~/esp/esp-idf`，其 Python
+环境位于 `~/.espressif`，均无需移动硬盘：
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install pytest
+.venv/bin/python -m pytest tests/ -v
+
+export IDF_PYTHON_ENV_PATH="$HOME/.espressif/python_env/idf5.4_py3.13_env"
+export ESP_PYTHON="$IDF_PYTHON_ENV_PATH/bin/python"
+source "$HOME/esp/esp-idf/export.sh"
+cd firmware && idf.py build
+```
+
 ```bash
 # 1. 生成合成场景 -> results/dataset/*.csv
 python simulator/generate.py

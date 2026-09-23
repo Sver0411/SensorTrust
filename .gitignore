@@ -9,6 +9,7 @@ firmware/sdkconfig.old
 # python
 __pycache__/
 .pytest_cache/
+.venv/
 
 # compiled test binaries
 test_core

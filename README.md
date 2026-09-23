@@ -275,7 +275,7 @@ neither path needs an external drive:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install pytest
+.venv/bin/python -m pip install -r requirements-dev.txt
 .venv/bin/python -m pytest tests/ -v
 
 export IDF_PYTHON_ENV_PATH="$HOME/.espressif/python_env/idf5.4_py3.13_env"

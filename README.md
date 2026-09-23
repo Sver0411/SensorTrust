@@ -1,8 +1,14 @@
-# SensorTrust
+# SensorTrust v0.2
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-SensorTrust is a small embedded sensor-health checker that detects stuck values, impossible ranges, sudden spikes, sustained drift and missing data, then converts those signals into a simple health state and score.
+SensorTrust is a portable C11 sensor-health detector. Its five v0.1 fault semantics are frozen; v0.2 adds a real ESP32-S3/SHT30 experiment, deterministic software fault injection, and an auditable measurement pipeline.
+
+**Physical link verified:** an ESP32-S3 read a real SHT30 over I²C and emitted a valid sample. The full clean baseline and fault experiment are still being collected; no detection rate is claimed until `results/v0.2/` contains a complete clean-tree log and generated tables. BH1750 has not been tested.
+
+Hardware validation uses an accelerated 1 Hz laboratory sampling schedule. It is not the deployment interval. The health score is a heuristic severity score, not a calibrated probability; a detected fault means suspicious data, not proof of a broken sensor.
+
+The [hardware protocol and experiment procedure](hardware/README.md) explain exactly how raw readings, injected readings, ground truth, and metrics are recorded.
 
 It answers one question about one sensor channel:
 
@@ -161,7 +167,7 @@ means "100 minus the penalties of the faults that are currently visible".
 
 ## Example
 
-The ESP32 demo feeds 60 samples of one temperature channel (30 plausible
+The archived v0.1 synthetic example feeds 60 samples of one temperature channel (30 plausible
 readings, one 36 C jump, then a register that stops moving) and prints one line
 per sample plus a verdict:
 
@@ -193,9 +199,8 @@ Two things to read out of that output:
 - the fault type is in `flags`. The state alone does not tell you *what* is
   wrong, and a transient fault can be gone again by the last sample.
 
-That output comes from compiling `firmware/main/main.c` together with
-`core/sensor_trust.c` on a PC - the file uses nothing but stdio and the core, so
-the demo can be checked without hardware.
+That output is historical synthetic evidence. The current firmware reads an
+SHT30; the seven reproducible synthetic scenarios remain in `simulator/`.
 
 ## Scenario results
 
@@ -228,24 +233,26 @@ Two rows deserve a comment:
 ## ESP32 status
 
 ```text
-Board:                  not connected
-Sensor:                 none (no BME280 driver yet, by design)
-Real sensor validation: Not measured yet
+Board:                  physical ESP32-S3, connected by USB
+Sensor:                 SHT30 at I2C address 0x44, SDA GPIO 8, SCL GPIO 9
+Channels from driver:   temperature_C and humidity_percent
+Evaluated channel:      temperature_C
+BH1750:                 not tested
+Real clean/fault metrics: pending complete formal run
 ```
 
-`firmware/` is an ESP-IDF project that only demonstrates the core: it builds
-synthetic samples, feeds them to SensorTrust, prints the result. It does not
-talk to a real sensor, and it does not include a driver for one - the core
-takes generic `sensor_sample_t` values, so a driver can be added later without
-touching the detection logic.
+`firmware/` reads physical SHT30 temperature and humidity over I²C. The
+temperature channel passes through a separate deterministic injector and then
+the unchanged `sensor_trust_update()` API. Startup fails if SHT30 I²C, CRC or
+sanity checks fail. No generated value substitutes for a physical read.
 
 Build status:
 
 ```text
 ESP-IDF:         v5.4.4, target esp32s3
-Command:         idf.py set-target esp32s3 && idf.py build
-Result:          Project build complete, 0 compiler warnings
-App binary:      192,256 bytes (82% of the 1 MB app partition free)
+Command:         idf.py build
+Result:          Project build complete
+App binary:      see current build output
 Core in firmware: core/sensor_trust.c is compiled into the main component
 ```
 
@@ -256,11 +263,9 @@ it was before that change. (The demo itself still uses `printf`; the *core* does
 not, which is the part that matters when this is dropped into someone else's
 firmware.)
 
-The firmware and the host tests therefore run the same `core/sensor_trust.c`,
-not two copies of it. What has *not* happened is running it on hardware: the
-demo's printed output above comes from compiling the same
-`firmware/main/main.c` on the host, because that file uses nothing but stdio
-(and no sensor is attached).
+The firmware and host tests run the same `core/sensor_trust.c`. The physical
+sanity check has passed. It is distinct from the planned ≥30-minute clean
+baseline and five repeated episodes of each fault.
 
 ## Run it
 
@@ -279,7 +284,7 @@ python -m pytest tests/ -v
 cc -std=c11 -Wall -Wextra -Werror core/sensor_trust.c tests/test_core.c -o test_core -lm
 ./test_core
 
-# 5. ESP-IDF demo (needs an installed ESP-IDF)
+# 5. ESP-IDF hardware experiment (requires physical SHT30 wiring)
 cd firmware
 idf.py set-target esp32s3
 idf.py build
@@ -290,11 +295,11 @@ Current status on the development machine:
 ```text
 C core tests:     21 passed, 0 failed, 0 compiler warnings
                   (-std=c11 -Wall -Wextra -Werror)
-Python tests:      9 passed
+Python tests:      22 passed (v0.1 simulator + v0.2 parser/injector)
 CI:               .github/workflows/tests.yml, one job, pytest only
 ```
 
-CI is deliberately one job running `python -m pytest tests/ -v` on Ubuntu.
+CI is one job running `python -m pytest tests/ -v` on Ubuntu.
 `test_c_host_tests_pass` compiles and runs `tests/test_core.c` inside that same
 run, so one step covers both sides. There is no build matrix, no Docker, no
 ESP-IDF CI and no coverage upload.
@@ -319,15 +324,22 @@ SensorTrust/
 ├── firmware/
 │   ├── CMakeLists.txt
 │   ├── sdkconfig.defaults
+│   ├── experiment_config.json  # reviewed thresholds, wiring and episode schedule
 │   └── main/
 │       ├── CMakeLists.txt
-│       └── main.c            # ESP32 demo (synthetic samples, prints verdicts)
+│       ├── sensor_reader.c    # real SHT30 I2C + CRC/sanity checks
+│       ├── fault_injector.c   # hardware-independent deterministic injection
+│       └── experiment.c       # periodic schedule + ST_* serial protocol
+├── hardware/
+│   ├── capture.py            # clean-tree serial capture
+│   └── evaluate.py           # strict parser + CSV metrics
 ├── results/
 │   ├── dataset/*.csv         # generated scenario streams (self-describing)
 │   └── scenarios.csv         # generated summary
 ├── tests/
 │   ├── test_core.c           # 21 C tests for the core
-│   └── test_simulator.py     # 9 Python tests for the simulator pipeline
+│   ├── test_simulator.py      # 9 Python simulator tests
+│   └── test_hardware.py       # parser and injector host tests
 ├── .github/workflows/tests.yml  # one CI job: pytest (which also runs the C tests)
 ├── README.md
 ├── README.zh-CN.md
@@ -340,8 +352,10 @@ SensorTrust/
   and does not vote across nodes. A single channel cannot tell a real
   environmental change from a sensor fault, which is why drift is reported as
   *suspected*.
-- **Synthetic data only.** All numbers in this README come from generated
-  streams. Nothing here has been run against a real failing sensor yet.
+- **Quantitative hardware results pending.** The SHT30 link has produced a
+  physical reading, but a complete baseline and repeated injection episodes
+  have not yet been accepted as formal evidence. The table above remains v0.1
+  synthetic evidence.
 - **A detected fault is a suspicion, not a verdict.** A frozen reading can be a
   genuinely constant environment; an impossible value can be a wiring problem
   rather than a dead sensor. SensorTrust reports data-quality suspicion, so the
@@ -372,8 +386,8 @@ SensorTrust/
   optimised, and they are documented in one place (`scenarios.py` for the
   simulator, `sensor_trust_default_config()` for the generic default) so they
   can be reviewed and changed without hunting through the code.
-- **Not implemented in v0.1:** real sensor validation, multi-sensor fusion, ML
-  fault detection, cross-node voting, cloud diagnostics.
+- **Constant bias is a blind spot to probe.** OFFSET is an injection mode, not
+  a sixth detector. A single-channel temporal detector may miss it entirely.
 
 v0.1 is frozen at these five detectors.
 

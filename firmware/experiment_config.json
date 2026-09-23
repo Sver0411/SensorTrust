@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "experiment_id": "sht30_temperature_v02",
+  "sensor": "SHT30",
+  "channel": "temperature_C",
+  "sensor_address": 68,
+  "sda_gpio": 8,
+  "scl_gpio": 9,
+  "sample_interval_ms": 1000,
+  "baseline_samples": 1801,
+  "repetitions": 5,
+  "recovery_samples": 55,
+  "seed": 0,
+  "sensor_trust": {
+    "min_value": -40.0,
+    "max_value": 85.0,
+    "stuck_epsilon": 0.01,
+    "stuck_window": 20,
+    "spike_threshold": 3.0,
+    "drift_window": 24,
+    "drift_threshold": 0.01,
+    "missing_limit": 3
+  },
+  "injection": {
+    "FREEZE": {"duration_samples": 40},
+    "SPIKE": {"duration_samples": 1, "amplitude": 10.0},
+    "DRIFT": {"duration_samples": 90, "rate_per_second": 0.05},
+    "DROP": {"duration_samples": 6},
+    "OUT_OF_RANGE": {"duration_samples": 5, "value": 150.0},
+    "OFFSET": {"duration_samples": 20, "offset": 4.0}
+  }
+}

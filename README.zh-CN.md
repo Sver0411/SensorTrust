@@ -1,8 +1,12 @@
-# SensorTrust
+# SensorTrust v0.2
 
 [English](README.md) | **简体中文**
 
-SensorTrust 是一个轻量的嵌入式传感器健康检查器：它能检测数值卡死、超出物理量程、突发尖峰、持续漂移和数据缺失，并把这些信号转换成简单的健康状态与评分。
+SensorTrust 是一个可移植的 C11 传感器健康检测器。v0.1 的五类故障语义保持冻结；v0.2 增加真实 ESP32-S3/SHT30 数据采集、确定性软件故障注入和可审计的指标流水线。
+
+**真实硬件链路已核实：** ESP32-S3 已通过 I²C 从真实 SHT30 读到有效数据。完整的正常基线与重复故障实验尚未完成；在 `results/v0.2/` 出现完整、干净工作区的日志和派生表之前，不宣称任何检测率。BH1750 尚未测试。
+
+硬件验证采用加速的实验室 1 Hz 采样计划，并非部署采样间隔。健康分数是启发式严重程度，不是概率；故障标志意味着数据可疑，不等于传感器物理损坏。详见[硬件实验流程](hardware/README.md)。
 
 它只回答关于单个传感器通道的一个问题：
 
@@ -117,9 +121,9 @@ typedef struct {
 
 **健康评分是一个启发式的严重程度分数，不是标定过的概率。** `health_score = 72` 不表示"有 72 % 的概率健康"，而是表示"100 减去当前可见故障的罚分"。
 
-## 示例
+## v0.1 合成示例
 
-ESP32 演示程序向一个温度通道喂入 60 个采样（30 个合理读数、一次 36 °C 的跳变、随后一个不再变化的寄存器），每个采样打印一行，最后给出结论：
+v0.1 合成演示向一个温度通道喂入 60 个采样（30 个合理读数、一次 36 °C 的跳变、随后一个不再变化的寄存器），每个采样打印一行，最后给出结论：
 
 ```text
 SensorTrust v0.1 demo, one temperature channel, 1 Hz
@@ -144,7 +148,7 @@ flags: STUCK
 - 第 55..59 个采样在数值已经冻结时，仍然显示 `HEALTHY / score=100`。只有当一个完整窗口都没有变化时，检测器才判定为 `STUCK` —— 这正是让一段短暂的平坦区间不被误报为故障的原因。而长期的恒定输出**会**被上报，并且是以*疑似*的形式上报：见[局限性](#局限性)。
 - 故障类型在 `flags` 里。只看状态无法知道*哪里*出了问题，而且一个瞬时故障到最后一个采样时可能已经消失了。
 
-该输出来自在 PC 上把 `firmware/main/main.c` 与 `core/sensor_trust.c` 一起编译 —— 该文件只使用 stdio 和核心，因此无需硬件即可验证这个演示。
+该输出是 v0.1 的历史合成证据。当前固件读取真实 SHT30；七个可复现的合成场景仍保留在 `simulator/`。
 
 ## 场景结果
 
@@ -170,26 +174,29 @@ flags: STUCK
 ## ESP32 现状
 
 ```text
-Board:                  not connected
-Sensor:                 none (no BME280 driver yet, by design)
-Real sensor validation: Not measured yet
+Board:                  已通过 USB 连接的真实 ESP32-S3
+Sensor:                 SHT30，I²C 地址 0x44，SDA GPIO 8，SCL GPIO 9
+Driver channels:        temperature_C 和 humidity_percent
+Evaluated channel:      temperature_C
+BH1750:                 尚未测试
+Formal metrics:          待完整正式实验
 ```
 
-`firmware/` 是一个 ESP-IDF 工程，但它只用于演示这套核心：它构造合成采样、喂给 SensorTrust、打印结果。它不与真实传感器通信，也不包含任何传感器驱动 —— 核心接收的是通用的 `sensor_sample_t` 值，因此以后可以在不改动检测逻辑的前提下把驱动加上。
+`firmware/` 从真实 SHT30 读取温度与湿度。温度数据经过独立的确定性注入器，再进入未修改的 `sensor_trust_update()`。若 I²C、CRC 或数值合理性检查失败，启动阶段直接报错；不会用合成数据替代真实读数。
 
 构建状态：
 
 ```text
 ESP-IDF:         v5.4.4, target esp32s3
-Command:         idf.py set-target esp32s3 && idf.py build
-Result:          Project build complete, 0 compiler warnings
-App binary:      192,256 bytes (82% of the 1 MB app partition free)
+Command:         idf.py build
+Result:          Project build complete
+App binary:      以当前构建输出为准
 Core in firmware: core/sensor_trust.c is compiled into the main component
 ```
 
 标志位格式化改用有界拷贝、不再调用 `snprintf`，因此核心不会链接 printf 家族中的任何函数：镜像里不存在 `snprintf`、`vsnprintf`、`sprintf` 符号，app 二进制比改动前小了 13,120 字节。（演示程序自己仍然使用 `printf`；**核心**不用，这才是它被嵌进别人固件时真正重要的一点。）
 
-因此固件和主机测试跑的是同一份 `core/sensor_trust.c`，而不是它的两份副本。尚未发生的事情是：在真实硬件上运行它 —— 上面演示的打印输出来自在主机上编译同一份 `firmware/main/main.c`，因为该文件只用了 stdio（而且没有接任何传感器）。
+固件和主机测试跑的是同一份 `core/sensor_trust.c`。真实硬件的短时读取检查已通过，但至少 30 分钟正常基线及重复故障实验仍需完整采集。
 
 ## 运行方式
 
@@ -208,7 +215,7 @@ python -m pytest tests/ -v
 cc -std=c11 -Wall -Wextra -Werror core/sensor_trust.c tests/test_core.c -o test_core -lm
 ./test_core
 
-# 5. ESP-IDF 演示（需要已安装 ESP-IDF）
+# 5. ESP-IDF 真实硬件实验（需要已接好的 SHT30）
 cd firmware
 idf.py set-target esp32s3
 idf.py build
@@ -219,7 +226,7 @@ idf.py build
 ```text
 C 核心测试:  21 passed, 0 failed, 0 compiler warnings
             (-std=c11 -Wall -Wextra -Werror)
-Python 测试:  9 passed
+Python 测试:  22 passed（v0.1 模拟器 + v0.2 解析器/注入器）
 CI:          .github/workflows/tests.yml，单个 job，只跑 pytest
 ```
 
@@ -245,15 +252,22 @@ SensorTrust/
 ├── firmware/
 │   ├── CMakeLists.txt
 │   ├── sdkconfig.defaults
+│   ├── experiment_config.json  # 硬件接线、阈值和确定性计划
 │   └── main/
 │       ├── CMakeLists.txt
-│       └── main.c            # ESP32 演示（合成采样，打印结论）
+│       ├── sensor_reader.c    # SHT30 I²C + CRC 与合理性检查
+│       ├── fault_injector.c   # 独立故障注入
+│       └── experiment.c       # 固定周期与 ST_* 协议
+├── hardware/
+│   ├── capture.py            # 干净工作区串口采集
+│   └── evaluate.py           # 严格解析与量化指标
 ├── results/
 │   ├── dataset/*.csv         # 生成的场景数据流（自描述）
 │   └── scenarios.csv         # 生成的汇总
 ├── tests/
 │   ├── test_core.c           # 21 个 C 核心测试
-│   └── test_simulator.py     # 9 个模拟器流水线 Python 测试
+│   ├── test_simulator.py     # 9 个模拟器测试
+│   └── test_hardware.py      # 硬件日志解析与注入器主机测试
 ├── .github/workflows/tests.yml  # 单个 CI job：pytest（其中也会跑 C 测试）
 ├── README.md
 ├── README.zh-CN.md
@@ -263,7 +277,7 @@ SensorTrust/
 ## 局限性
 
 - **一个上下文只管一个通道，不做融合。** SensorTrust 不在通道之间做比较，也不做跨节点投票。单个通道无法区分真实的环境变化和传感器故障，这也是漂移只被报为*疑似*的原因。
-- **只使用合成数据。** 本 README 中所有数字都来自生成的数据流。这里还没有任何东西跑在真实的故障传感器上。
+- **正式硬件指标待采集。** SHT30 已产生真实读数，但正常基线和重复注入实验尚未作为正式证据验收。上面的结果表仍是 v0.1 合成证据。
 - **检测到故障是怀疑，不是判决。** 冻结的读数可能来自真的恒定的环境；不可能的数值可能是接线问题而不是传感器损坏。SensorTrust 报告的是数据质量上的可疑情况，由调用方决定如何处理该读数。
 - **STUCK 仍然可能把"环境真的没有变化"和"传感器输出冻结"混为一谈。** 使用完整窗口的变化范围可以减少把正常稳定环境误判为 STUCK 的情况，但无法彻底消除：分辨率较粗的传感器处在一个确实不变的环境中，看起来依然是冻结的，而单个数值通道无法证明自己看到的是哪一种。
 - **DRIFT 是疑似漂移，不是传感器故障的证据。** 一段真实且持续的环境变化，在单个通道上会产生完全相同的斜率。多窗口确认过滤掉了短暂瞬态，但并不会把一个真实趋势变成故障。
@@ -271,7 +285,7 @@ SensorTrust/
 - **不做间隔/超时检测。** 这套 API 是推送式的：它只能看到被喂进来的采样。一个彻底不再调用 `sensor_trust_update()` 的设备根本不会产生采样，因此这种情况在核心内部是看不到的，必须由调用方看守（那是调度器的职责，不是健康检查器的）。
 - **STUCK 的窗口仍然以采样个数计。** 采样间隔变慢或变快时，同样的 `stuck_window` 代表不同的时长；只有 DRIFT 的斜率是以时间为基准的，所以只有 DRIFT 阈值能原封不动地跨过采样间隔的变化。
 - **阈值是手工设定的默认值，未经调优。** 它们没有做联合优化，但集中记录在一处（模拟器见 `scenarios.py`，通用默认见 `sensor_trust_default_config()`），便于审阅和修改，而不必在代码里到处找。
-- **v0.1 未实现：** 真实传感器验证、多传感器融合、ML 故障检测、跨节点投票、云端诊断。
+- **恒定偏移是待测盲点。** OFFSET 只是一种注入模式，不是第六种检测器。单通道时间序列检测器可能完全看不到它。
 
 v0.1 在这五个检测器上冻结。
 

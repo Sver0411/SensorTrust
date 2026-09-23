@@ -5,6 +5,7 @@ import argparse
 import json
 import re
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,41 +32,49 @@ def main() -> None:
         raise SystemExit("formal capture requires a clean Git tree")
     config, digest = load_config(CONFIG)
     started = datetime.now(timezone.utc)
-    # Keep only the unmodified ST_* protocol lines. Boot chatter is not part of
-    # the experiment and can contain device identifiers on some boards.
-    lines = []
-    with serial.Serial(args.port, args.baud, timeout=1) as port:
-        port.dtr = False
-        port.rts = True
-        import time
-        time.sleep(0.1)
-        port.rts = False
-        deadline = time.monotonic() + args.timeout_seconds
-        while time.monotonic() < deadline:
-            line = port.readline().decode("utf-8", errors="replace").strip()
-            if not line.startswith("ST_"):
-                continue
-            if re.search(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}", line):
-                raise SystemExit("device identifier appeared in protocol")
-            lines.append(line)
-            if line.startswith("ST_BEGIN "):
-                print("Experiment started", flush=True)
-            if line.startswith(("ST_END ", "ST_ERROR ")):
-                break
-        else:
-            raise SystemExit("capture timed out; no formal result saved")
-    text = "\n".join(lines) + "\n"
+    stamp = started.strftime("%Y%m%dT%H%M%SZ")
+    incomplete_dir = ROOT / "results" / "experimental" / "incomplete"
+    incomplete_dir.mkdir(parents=True, exist_ok=True)
+    partial = incomplete_dir / f"{config['experiment_id']}_{stamp}.partial.log"
+    # Persist each protocol line as it arrives. If a long desktop session ends,
+    # the incomplete trace remains available for diagnosis, never as a formal
+    # result. Boot chatter is excluded because it can contain identifiers.
+    count = 0
+    with partial.open("x", encoding="utf-8", buffering=1) as spool:
+        with serial.Serial(args.port, args.baud, timeout=1) as port:
+            port.dtr = False
+            port.rts = True
+            time.sleep(0.1)
+            port.rts = False
+            deadline = time.monotonic() + args.timeout_seconds
+            while time.monotonic() < deadline:
+                line = port.readline().decode("utf-8", errors="replace").strip()
+                if not line.startswith("ST_"):
+                    continue
+                if re.search(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}", line):
+                    raise SystemExit("device identifier appeared in protocol")
+                spool.write(line + "\n")
+                if line.startswith("ST_BEGIN "):
+                    print("Experiment started", flush=True)
+                if line.startswith("ST_SAMPLE "):
+                    count += 1
+                    if count % 300 == 0:
+                        print(f"Captured {count} samples", flush=True)
+                if line.startswith(("ST_END ", "ST_ERROR ")):
+                    break
+            else:
+                raise SystemExit(f"capture timed out; incomplete trace: {partial}")
+    text = partial.read_text(encoding="utf-8")
     begin, _ = parse_log(text, config, digest, allow_dirty=args.allow_dirty)
     if begin["git_commit"] != commit:
         raise SystemExit("firmware commit differs from current code commit")
     root = ROOT / "results" / ("experimental" if args.allow_dirty else "v0.2")
     raw_dir = root / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
-    stamp = started.strftime("%Y%m%dT%H%M%SZ")
     path = raw_dir / f"{config['experiment_id']}_{stamp}.log"
     if path.exists():
         raise SystemExit(f"refusing to overwrite {path}")
-    path.write_text(text, encoding="utf-8")
+    partial.replace(path)
     sidecar = path.with_suffix(".capture.json")
     sidecar.write_text(json.dumps({"capture_started_utc": started.isoformat(),
                                    "capture_finished_utc": datetime.now(timezone.utc).isoformat(),

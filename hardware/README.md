@@ -62,7 +62,10 @@ python hardware/evaluate.py results/v0.2/raw/YOUR_LOG.log
 ```
 
 `capture.py` resets the board and records complete, unmodified `ST_*` protocol
-lines. It strips boot chatter, which may contain device identifiers. It
+lines. It persists each line to `results/experimental/incomplete/` while the
+run is active, then moves the fully validated trace to `results/v0.2/raw/`.
+An interrupted trace stays incomplete and cannot be mistaken for formal data.
+It strips boot chatter, which may contain device identifiers. It
 refuses a dirty formal tree, a dirty firmware, a wrong Git commit, a bad config
 hash, an incomplete schedule, and any parser error. It never overwrites a raw
 log. The protocol includes chip revision, flash, PSRAM, ESP-IDF version,

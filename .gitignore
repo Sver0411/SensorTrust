@@ -20,3 +20,6 @@ test_core
 
 # agent workspace data
 .workbuddy/
+
+# Incomplete serial capture is retained locally for diagnosis, never formal evidence.
+results/experimental/incomplete/

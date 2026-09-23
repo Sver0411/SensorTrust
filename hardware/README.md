@@ -24,7 +24,7 @@ firmware carries current provenance. Do not tune thresholds after inspecting
 the formal results. A changed configuration requires a new pilot and a new
 measurement commit.
 
-The formal schedule is 1 Hz: 1801 clean samples (at least 30 minutes from
+The formal schedule is 1 Hz: 1810 clean samples (at least 30 minutes from
 first to last), followed by five episodes each of FREEZE, SPIKE, DRIFT, DROP,
 OUT_OF_RANGE and OFFSET, with 55 physical PASS samples after every episode.
 The fixed seed is `0`; no randomized timing is used. The accelerated 1 Hz

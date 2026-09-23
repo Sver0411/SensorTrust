@@ -7,7 +7,7 @@
   "sda_gpio": 8,
   "scl_gpio": 9,
   "sample_interval_ms": 1000,
-  "baseline_samples": 1801,
+  "baseline_samples": 1810,
   "repetitions": 5,
   "recovery_samples": 55,
   "seed": 0,

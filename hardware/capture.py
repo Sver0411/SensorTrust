@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -14,6 +15,22 @@ from evaluate import CONFIG, ROOT, load_config, parse_log
 
 def git_output(*args: str) -> str:
     return subprocess.check_output(["git", *args], cwd=ROOT, text=True).strip()
+
+
+def toolchain_metadata() -> dict:
+    commands = json.loads((ROOT / "firmware" / "build" / "compile_commands.json")
+                          .read_text(encoding="utf-8"))
+    compiler = None
+    for entry in commands:
+        parts = shlex.split(entry.get("command", ""))
+        if parts and Path(parts[0]).name.endswith("-esp32s3-elf-gcc"):
+            compiler = Path(parts[0])
+            break
+    if compiler is None:
+        return {}
+    version = subprocess.check_output([compiler, "--version"], text=True).splitlines()[0]
+    return {"compiler_target": compiler.name.removesuffix("-gcc"),
+            "compiler_version": version}
 
 
 def main() -> None:
@@ -78,7 +95,8 @@ def main() -> None:
     sidecar = path.with_suffix(".capture.json")
     sidecar.write_text(json.dumps({"capture_started_utc": started.isoformat(),
                                    "capture_finished_utc": datetime.now(timezone.utc).isoformat(),
-                                   "baud": args.baud}, indent=2) + "\n")
+                                   "baud": args.baud,
+                                   "toolchain": toolchain_metadata()}, indent=2) + "\n")
     print(path)
     print("Run hardware/evaluate.py on this log to generate tables.")
 

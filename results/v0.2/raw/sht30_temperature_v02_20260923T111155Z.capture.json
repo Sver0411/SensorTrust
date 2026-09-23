@@ -1,0 +1,9 @@
+{
+  "capture_started_utc": "2026-09-23T11:11:55.785580+00:00",
+  "capture_finished_utc": "2026-09-23T12:23:06.398636+00:00",
+  "baud": 115200,
+  "toolchain": {
+    "compiler_target": "xtensa-esp32s3-elf",
+    "compiler_version": "xtensa-esp-elf-gcc (crosstool-NG esp-14.2.0_20260121) 14.2.0"
+  }
+}

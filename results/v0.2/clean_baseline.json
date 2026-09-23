@@ -1,0 +1,14 @@
+{
+  "duration_ms": 1809000,
+  "samples": 1810,
+  "raw_read_failures": 0,
+  "false_positive_samples": 0,
+  "false_positive_rate": 0.0,
+  "false_positive_by_fault": {
+    "RANGE": 0,
+    "STUCK": 0,
+    "SPIKE": 0,
+    "DRIFT": 0,
+    "MISSING": 0
+  }
+}

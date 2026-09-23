@@ -295,7 +295,7 @@ def clean_baseline(samples: list[dict], config: dict) -> dict:
 def _write_csv(path: Path, columns: tuple[str, ...], rows: list[dict],
                *, na: str = "") -> None:
     with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=columns)
+        writer = csv.DictWriter(handle, fieldnames=columns, lineterminator="\n")
         writer.writeheader()
         for row in rows:
             writer.writerow({key: na if row.get(key) is None else row[key] for key in columns})
@@ -332,6 +332,15 @@ def evaluate(log_path: Path, out_dir: Path, config_path: Path = CONFIG,
                 "raw_log": str(log_path.relative_to(ROOT)) if log_path.is_relative_to(ROOT)
                 else str(log_path),
                 "raw_log_sha256": hashlib.sha256(log_path.read_bytes()).hexdigest()}
+    sidecar_path = log_path.with_suffix(".capture.json")
+    if sidecar_path.is_file():
+        capture = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        require(isinstance(capture, dict), "capture sidecar must be an object")
+        metadata["capture"] = {key: capture[key] for key in
+                               ("capture_started_utc", "capture_finished_utc", "baud")
+                               if key in capture}
+        if "toolchain" in capture:
+            metadata["toolchain"] = capture["toolchain"]
     (out_dir / "hardware_metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
     return {"baseline": baseline, "metrics": metric_rows, "episodes": episode_rows}
 

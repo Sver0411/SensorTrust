@@ -82,7 +82,23 @@ python hardware/evaluate.py results/experimental/raw/YOUR_LOG.log \
 
 `evaluate.py` regenerates `sample_results.csv`, `fault_episodes.csv`,
 `metrics_per_fault.csv`, `metrics_per_channel.csv`, `clean_baseline.json`, and
-`hardware_metadata.json` from the raw log. The raw log is the source of truth.
+`hardware_metadata.json` from the raw log and its `.capture.json` sidecar. The
+sidecar records capture time, baud rate, and the compiler target/version. The
+raw protocol log remains the source of truth for samples and detector output.
+
+To regenerate the four figures and the metric tables embedded in both top-level
+READMEs, install the optional plotting dependency and run:
+
+```bash
+.venv/bin/python -m pip install -r requirements-analysis.txt
+.venv/bin/python hardware/plot_results.py
+.venv/bin/python hardware/render_readme.py
+```
+
+All reported values are read from the CSV/JSON results; neither README is the
+source of metric values. The figures cover one representative trace for each
+injection mode, per-episode detection latency, episode recall versus raw sample
+precision, and clean-baseline false positives.
 
 ## Metric meanings
 

@@ -1,0 +1,2 @@
+sensor,channel,duration_ms,samples,raw_read_failures,false_positive_samples,false_positive_rate
+SHT30,temperature_C,1809000,1810,0,0,0.0

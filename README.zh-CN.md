@@ -4,7 +4,48 @@
 
 SensorTrust 是一个可移植的 C11 传感器健康检测器。v0.1 的五类故障语义保持冻结；v0.2 增加真实 ESP32-S3/SHT30 数据采集、确定性软件故障注入和可审计的指标流水线。
 
-**真实硬件链路已核实：** ESP32-S3 已通过 I²C 从真实 SHT30 读到有效数据。完整的正常基线与重复故障实验尚未完成；在 `results/v0.2/` 出现完整、干净工作区的日志和派生表之前，不宣称任何检测率。BH1750 尚未测试。
+<!-- V0.2_RESULTS_START -->
+## v0.2 真机评估（由原始串口日志生成）
+
+正常真实数据基线：30 分 9 秒，1,810 个样本；误报样本 0，误报率 0.000%；物理读取失败 0。采样间隔为实验室 1 Hz。
+
+| 故障 | 注入轮数 | 检出轮数 | 轮次召回率 | 中位检测延迟 | p95 检测延迟 | 中位恢复延迟 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| RANGE | 5 | 5 | 100% | 0 ms | 0 ms | 0 ms |
+| STUCK | 5 | 5 | 100% | 18,000 ms | 18,000 ms | 0 ms |
+| SPIKE | 5 | 5 | 100% | 0 ms | 0 ms | 1,000 ms |
+| DRIFT | 5 | 5 | 100% | 30,000 ms | 30,000 ms | 0 ms |
+| MISSING | 5 | 5 | 100% | 2,000 ms | 2,000 ms | 0 ms |
+
+逐样本指标（确认窗口尚未满足的故障样本会计为 FN）：
+
+| 故障 | TP | FP | FN | Precision | Recall | F1 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| RANGE | 25 | 0 | 0 | 1.000 | 1.000 | 1.000 |
+| STUCK | 113 | 0 | 87 | 1.000 | 0.565 | 0.722 |
+| SPIKE | 5 | 25 | 0 | 0.167 | 1.000 | 0.286 |
+| DRIFT | 302 | 0 | 148 | 1.000 | 0.671 | 0.803 |
+| MISSING | 20 | 0 | 10 | 1.000 | 0.667 | 0.800 |
+
+基线各故障标志误报数：RANGE 0，STUCK 0，SPIKE 0，DRIFT 0，MISSING 0。
+SPIKE 的 25 个逐样本 FP 出现在注入/恢复边界；其中稳定 OFFSET 注入开始的 5 个样本产生瞬态 SPIKE。正常基线没有 SPIKE 误报。
+OFFSET 盲点探针：5 轮，恒定偏移持续期间没有 OFFSET 检测器；偏移开始时 5/100 个样本触发 SPIKE。偏移撤除会产生反向瞬态；稳定偏移本身不被单通道检测器识别。
+
+五类检测器的 episode recall 都是 5/5，但这不等于逐样本无漏报。FREEZE、DRIFT、DROP 需要确认窗口，所以各自存在窗口期 FN；SPIKE 的逐样本 precision 也低于 episode recall。稳定基线为零误报仅适用于本次 SHT30 环境和约 30 分钟观察。
+
+图表（均由 `results/v0.2/` CSV 生成）：
+
+![真机数据上的各注入模式时间序列](results/v0.2/plots/fault_timeline.png)
+
+![各轮故障检测延迟](results/v0.2/plots/detection_latency.png)
+
+![轮次召回率与逐样本 precision](results/v0.2/plots/detection_performance.png)
+
+![正常基线误报数](results/v0.2/plots/baseline_false_positives.png)
+
+测量固件 commit `6e043c98544d8682371bad9b7b3a2e99c7189696`（git_dirty=false）；配置 SHA-256 `9a1461beb37f50ae4958950222feea186b1f3509c4fcf60de19f5c3606c1da6e`；编译器 `xtensa-esp-elf-gcc (crosstool-NG esp-14.2.0_20260121) 14.2.0`。原始日志：`results/v0.2/raw/sht30_temperature_v02_20260923T111155Z.log`（SHA-256 `80f8a6d4744784e44f35b9c4f0f29d1cf41d764d6c399f99bb1fe71eae746044`）。
+SHT30 temperature_C 已评估；humidity_percent 仅由驱动读取、未评估；BH1750 未测试。
+<!-- V0.2_RESULTS_END -->
 
 硬件验证采用加速的实验室 1 Hz 采样计划，并非部署采样间隔。健康分数是启发式严重程度，不是概率；故障标志意味着数据可疑，不等于传感器物理损坏。详见[硬件实验流程](hardware/README.md)。
 
@@ -179,7 +220,7 @@ Sensor:                 SHT30，I²C 地址 0x44，SDA GPIO 8，SCL GPIO 9
 Driver channels:        temperature_C 和 humidity_percent
 Evaluated channel:      temperature_C
 BH1750:                 尚未测试
-Formal metrics:          待完整正式实验
+Formal metrics:          见上方由真实采集数据生成的 v0.2 结果
 ```
 
 `firmware/` 从真实 SHT30 读取温度与湿度。温度数据经过独立的确定性注入器，再进入未修改的 `sensor_trust_update()`。若 I²C、CRC 或数值合理性检查失败，启动阶段直接报错；不会用合成数据替代真实读数。
@@ -196,7 +237,7 @@ Core in firmware: core/sensor_trust.c is compiled into the main component
 
 标志位格式化改用有界拷贝、不再调用 `snprintf`，因此核心不会链接 printf 家族中的任何函数：镜像里不存在 `snprintf`、`vsnprintf`、`sprintf` 符号，app 二进制比改动前小了 13,120 字节。（演示程序自己仍然使用 `printf`；**核心**不用，这才是它被嵌进别人固件时真正重要的一点。）
 
-固件和主机测试跑的是同一份 `core/sensor_trust.c`。真实硬件的短时读取检查已通过，但至少 30 分钟正常基线及重复故障实验仍需完整采集。
+固件和主机测试跑的是同一份 `core/sensor_trust.c`。完整真实基线及每种注入五轮的结果保存在 `results/v0.2/`；测量完成后没有修改检测阈值或核心语义。
 
 ## 运行方式
 
@@ -274,10 +315,13 @@ SensorTrust/
 │       └── experiment.c       # 固定周期与 ST_* 协议
 ├── hardware/
 │   ├── capture.py            # 干净工作区串口采集
-│   └── evaluate.py           # 严格解析与量化指标
+│   ├── evaluate.py           # 严格解析与量化指标
+│   ├── plot_results.py       # 四类证据图
+│   └── render_readme.py      # 从结果 CSV 生成 README 指标
 ├── results/
 │   ├── dataset/*.csv         # 生成的场景数据流（自描述）
-│   └── scenarios.csv         # 生成的汇总
+│   ├── scenarios.csv         # 生成的汇总
+│   └── v0.2/                 # 真机原始日志、逐样本 ground truth、指标和图表
 ├── tests/
 │   ├── test_core.c           # 21 个 C 核心测试
 │   ├── test_simulator.py     # 9 个模拟器测试
@@ -291,7 +335,7 @@ SensorTrust/
 ## 局限性
 
 - **一个上下文只管一个通道，不做融合。** SensorTrust 不在通道之间做比较，也不做跨节点投票。单个通道无法区分真实的环境变化和传感器故障，这也是漂移只被报为*疑似*的原因。
-- **正式硬件指标待采集。** SHT30 已产生真实读数，但正常基线和重复注入实验尚未作为正式证据验收。上面的结果表仍是 v0.1 合成证据。
+- **硬件证据覆盖一个 SHT30 温度通道和一次采集。** 驱动读取湿度，但本次没有评估；BH1750 也未测试。30 分钟基线和每种故障五轮结果不能代表其他设备、环境或部署采样间隔。
 - **检测到故障是怀疑，不是判决。** 冻结的读数可能来自真的恒定的环境；不可能的数值可能是接线问题而不是传感器损坏。SensorTrust 报告的是数据质量上的可疑情况，由调用方决定如何处理该读数。
 - **STUCK 仍然可能把"环境真的没有变化"和"传感器输出冻结"混为一谈。** 使用完整窗口的变化范围可以减少把正常稳定环境误判为 STUCK 的情况，但无法彻底消除：分辨率较粗的传感器处在一个确实不变的环境中，看起来依然是冻结的，而单个数值通道无法证明自己看到的是哪一种。
 - **DRIFT 是疑似漂移，不是传感器故障的证据。** 一段真实且持续的环境变化，在单个通道上会产生完全相同的斜率。多窗口确认过滤掉了短暂瞬态，但并不会把一个真实趋势变成故障。
@@ -299,7 +343,7 @@ SensorTrust/
 - **不做间隔/超时检测。** 这套 API 是推送式的：它只能看到被喂进来的采样。一个彻底不再调用 `sensor_trust_update()` 的设备根本不会产生采样，因此这种情况在核心内部是看不到的，必须由调用方看守（那是调度器的职责，不是健康检查器的）。
 - **STUCK 的窗口仍然以采样个数计。** 采样间隔变慢或变快时，同样的 `stuck_window` 代表不同的时长；只有 DRIFT 的斜率是以时间为基准的，所以只有 DRIFT 阈值能原封不动地跨过采样间隔的变化。
 - **阈值是手工设定的默认值，未经调优。** 它们没有做联合优化，但集中记录在一处（模拟器见 `scenarios.py`，通用默认见 `sensor_trust_default_config()`），便于审阅和修改，而不必在代码里到处找。
-- **恒定偏移是待测盲点。** OFFSET 只是一种注入模式，不是第六种检测器。单通道时间序列检测器可能完全看不到它。
+- **恒定偏移已测出是盲点。** OFFSET 只是一种注入模式，不是第六种检测器。进入偏移时会产生瞬态 SPIKE；偏移被接受为新量级后，持续的 +4 °C 偏差不会被识别。
 
 v0.1 在这五个检测器上冻结。
 

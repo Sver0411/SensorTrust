@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "experiment_id": "sht30_temperature_v02",
+  "git_commit": "6e043c98544d8682371bad9b7b3a2e99c7189696",
+  "git_dirty": false,
+  "config_sha256": "9a1461beb37f50ae4958950222feea186b1f3509c4fcf60de19f5c3606c1da6e",
+  "chip": "ESP32-S3",
+  "chip_revision": 2,
+  "flash_bytes": 2097152,
+  "psram_bytes": 0,
+  "esp_idf": "v5.4.4",
+  "sensor": "SHT30",
+  "channel": "temperature_C",
+  "sensor_address": 68,
+  "sda_gpio": 8,
+  "scl_gpio": 9,
+  "sample_interval_ms": 1000,
+  "baseline_samples": 1810,
+  "repetitions": 5,
+  "recovery_samples": 55,
+  "seed": 0,
+  "start_monotonic_ms": 68,
+  "config": {
+    "min_value": -40.0,
+    "max_value": 85.0,
+    "stuck_epsilon": 0.01,
+    "stuck_window": 20,
+    "spike_threshold": 3.0,
+    "drift_window": 24,
+    "drift_threshold": 0.01,
+    "missing_limit": 3
+  },
+  "injection_config": {
+    "FREEZE": {
+      "duration_samples": 40
+    },
+    "SPIKE": {
+      "duration_samples": 1,
+      "amplitude": 10.0
+    },
+    "DRIFT": {
+      "duration_samples": 90,
+      "rate_per_second": 0.05
+    },
+    "DROP": {
+      "duration_samples": 6
+    },
+    "OUT_OF_RANGE": {
+      "duration_samples": 5,
+      "value": 150.0
+    },
+    "OFFSET": {
+      "duration_samples": 20,
+      "offset": 4.0
+    }
+  },
+  "raw_log": "results/v0.2/raw/sht30_temperature_v02_20260923T111155Z.log",
+  "raw_log_sha256": "80f8a6d4744784e44f35b9c4f0f29d1cf41d764d6c399f99bb1fe71eae746044",
+  "capture": {
+    "capture_started_utc": "2026-09-23T11:11:55.785580+00:00",
+    "capture_finished_utc": "2026-09-23T12:23:06.398636+00:00",
+    "baud": 115200
+  },
+  "toolchain": {
+    "compiler_target": "xtensa-esp32s3-elf",
+    "compiler_version": "xtensa-esp-elf-gcc (crosstool-NG esp-14.2.0_20260121) 14.2.0"
+  }
+}

@@ -4,7 +4,48 @@
 
 SensorTrust is a portable C11 sensor-health detector. Its five v0.1 fault semantics are frozen; v0.2 adds a real ESP32-S3/SHT30 experiment, deterministic software fault injection, and an auditable measurement pipeline.
 
-**Physical link verified:** an ESP32-S3 read a real SHT30 over I²C and emitted a valid sample. The full clean baseline and fault experiment are still being collected; no detection rate is claimed until `results/v0.2/` contains a complete clean-tree log and generated tables. BH1750 has not been tested.
+<!-- V0.2_RESULTS_START -->
+## v0.2 physical evaluation (generated from the raw serial log)
+
+Clean physical baseline: 30 min 9 s, 1,810 samples; 0 false-positive samples (0.000%); 0 physical read failures. Sampling was 1 Hz in this laboratory experiment.
+
+| Fault | Episodes | Detected | Episode recall | Median detection | p95 detection | Median recovery |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| RANGE | 5 | 5 | 100% | 0 ms | 0 ms | 0 ms |
+| STUCK | 5 | 5 | 100% | 18,000 ms | 18,000 ms | 0 ms |
+| SPIKE | 5 | 5 | 100% | 0 ms | 0 ms | 1,000 ms |
+| DRIFT | 5 | 5 | 100% | 30,000 ms | 30,000 ms | 0 ms |
+| MISSING | 5 | 5 | 100% | 2,000 ms | 2,000 ms | 0 ms |
+
+Raw sample metrics (confirmation-window misses count as FN):
+
+| Fault | TP | FP | FN | Precision | Recall | F1 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| RANGE | 25 | 0 | 0 | 1.000 | 1.000 | 1.000 |
+| STUCK | 113 | 0 | 87 | 1.000 | 0.565 | 0.722 |
+| SPIKE | 5 | 25 | 0 | 0.167 | 1.000 | 0.286 |
+| DRIFT | 302 | 0 | 148 | 1.000 | 0.671 | 0.803 |
+| MISSING | 20 | 0 | 10 | 1.000 | 0.667 | 0.800 |
+
+Baseline false positives by detector: RANGE 0, STUCK 0, SPIKE 0, DRIFT 0, MISSING 0.
+SPIKE's 25 raw sample false positives occur at injection/recovery boundaries; five appear when the OFFSET probe begins. The clean baseline had no SPIKE flags.
+OFFSET blind-spot probe: 5 episodes. There is no OFFSET detector; SPIKE appeared on 5/100 active biased samples, at the transition into the bias. Removing the bias creates a reverse transient; the sustained constant offset itself is not identified by this single-channel detector.
+
+All five detector types reached 5/5 episode recall, but that does not mean zero sample-level misses. FREEZE, DRIFT and DROP have confirmation-window false negatives; SPIKE sample precision is also lower than episode recall. Zero false positives on this baseline applies only to this SHT30 environment and roughly 30-minute observation.
+
+Figures (generated from the `results/v0.2/` CSV evidence):
+
+![Physical traces under each injection](results/v0.2/plots/fault_timeline.png)
+
+![Detection latency by episode](results/v0.2/plots/detection_latency.png)
+
+![Episode recall and sample precision](results/v0.2/plots/detection_performance.png)
+
+![Clean baseline false positives](results/v0.2/plots/baseline_false_positives.png)
+
+Measurement firmware commit `6e043c98544d8682371bad9b7b3a2e99c7189696` (`git_dirty=false`); config SHA-256 `9a1461beb37f50ae4958950222feea186b1f3509c4fcf60de19f5c3606c1da6e`; compiler `xtensa-esp-elf-gcc (crosstool-NG esp-14.2.0_20260121) 14.2.0`. Raw log: `results/v0.2/raw/sht30_temperature_v02_20260923T111155Z.log` (SHA-256 `80f8a6d4744784e44f35b9c4f0f29d1cf41d764d6c399f99bb1fe71eae746044`).
+SHT30 temperature_C was evaluated; humidity_percent is read by the driver but was not evaluated; BH1750 was not tested.
+<!-- V0.2_RESULTS_END -->
 
 Hardware validation uses an accelerated 1 Hz laboratory sampling schedule. It is not the deployment interval. The health score is a heuristic severity score, not a calibrated probability; a detected fault means suspicious data, not proof of a broken sensor.
 
@@ -238,7 +279,7 @@ Sensor:                 SHT30 at I2C address 0x44, SDA GPIO 8, SCL GPIO 9
 Channels from driver:   temperature_C and humidity_percent
 Evaluated channel:      temperature_C
 BH1750:                 not tested
-Real clean/fault metrics: pending complete formal run
+Real clean/fault metrics: see the generated v0.2 evaluation above
 ```
 
 `firmware/` reads physical SHT30 temperature and humidity over I²C. The
@@ -263,9 +304,10 @@ it was before that change. (The demo itself still uses `printf`; the *core* does
 not, which is the part that matters when this is dropped into someone else's
 firmware.)
 
-The firmware and host tests run the same `core/sensor_trust.c`. The physical
-sanity check has passed. It is distinct from the planned ≥30-minute clean
-baseline and five repeated episodes of each fault.
+The firmware and host tests run the same `core/sensor_trust.c`. The complete
+physical baseline and five repeated episodes per injection are recorded in
+`results/v0.2/`; no detector threshold or core semantics were changed after
+that measurement.
 
 ## Run it
 
@@ -347,10 +389,13 @@ SensorTrust/
 │       └── experiment.c       # periodic schedule + ST_* serial protocol
 ├── hardware/
 │   ├── capture.py            # clean-tree serial capture
-│   └── evaluate.py           # strict parser + CSV metrics
+│   ├── evaluate.py           # strict parser + CSV metrics
+│   ├── plot_results.py       # four evidence plots
+│   └── render_readme.py      # README metrics from result CSVs
 ├── results/
 │   ├── dataset/*.csv         # generated scenario streams (self-describing)
-│   └── scenarios.csv         # generated summary
+│   ├── scenarios.csv         # generated summary
+│   └── v0.2/                 # physical raw log, per-sample truth, metrics, plots
 ├── tests/
 │   ├── test_core.c           # 21 C tests for the core
 │   ├── test_simulator.py      # 9 Python simulator tests
@@ -367,10 +412,10 @@ SensorTrust/
   and does not vote across nodes. A single channel cannot tell a real
   environmental change from a sensor fault, which is why drift is reported as
   *suspected*.
-- **Quantitative hardware results pending.** The SHT30 link has produced a
-  physical reading, but a complete baseline and repeated injection episodes
-  have not yet been accepted as formal evidence. The table above remains v0.1
-  synthetic evidence.
+- **Hardware evidence covers one SHT30 temperature channel and one session.**
+  Humidity is read by the driver but was not evaluated, and BH1750 was not
+  tested. The baseline and five repeats per injected fault are not a claim about
+  other devices, environments or deployment intervals.
 - **A detected fault is a suspicion, not a verdict.** A frozen reading can be a
   genuinely constant environment; an impossible value can be a wiring problem
   rather than a dead sensor. SensorTrust reports data-quality suspicion, so the
@@ -401,8 +446,9 @@ SensorTrust/
   optimised, and they are documented in one place (`scenarios.py` for the
   simulator, `sensor_trust_default_config()` for the generic default) so they
   can be reviewed and changed without hunting through the code.
-- **Constant bias is a blind spot to probe.** OFFSET is an injection mode, not
-  a sixth detector. A single-channel temporal detector may miss it entirely.
+- **Constant bias is a measured blind spot.** OFFSET is an injection mode, not
+  a sixth detector. The bias transition can create a transient SPIKE, but the
+  sustained +4 °C offset is not identified once accepted as the new level.
 
 v0.1 is frozen at these five detectors.
 

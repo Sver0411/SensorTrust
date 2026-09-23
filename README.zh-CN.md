@@ -7,44 +7,64 @@ SensorTrust 是一个可移植的 C11 传感器健康检测器。v0.1 的五类�
 <!-- V0.2_RESULTS_START -->
 ## v0.2 真机评估（由原始串口日志生成）
 
-正常真实数据基线：30 分 9 秒，1,810 个样本；误报样本 0，误报率 0.000%；物理读取失败 0。采样间隔为实验室 1 Hz。
+硬件：ESP32-S3 + SHT30；评估通道：`temperature_C`；采样率：本实验 1 Hz。
+正常真实数据基线：1,810 个样本 / 30m09s；本次观察到误报样本 0 / 1,810（0.000%），物理读取失败 0。这只描述本次观察，不代表普遍的零误报率。
 
-| 故障 | 注入轮数 | 检出轮数 | 轮次召回率 | 中位检测延迟 | p95 检测延迟 | 中位恢复延迟 |
+注入 5 类目标故障，每类 5 轮：目标 episode 共 25/25 检出；OFFSET 是盲点探针，不计入五类目标召回率。
+
+| 故障 | Episodes | 检出 | Episode recall | 中位检测延迟 | 观测范围 | 中位恢复延迟 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| RANGE | 5 | 5 | 100% | 0 ms | 0 ms | 0 ms |
-| STUCK | 5 | 5 | 100% | 18,000 ms | 18,000 ms | 0 ms |
-| SPIKE | 5 | 5 | 100% | 0 ms | 0 ms | 1,000 ms |
-| DRIFT | 5 | 5 | 100% | 30,000 ms | 30,000 ms | 0 ms |
-| MISSING | 5 | 5 | 100% | 2,000 ms | 2,000 ms | 0 ms |
+| RANGE | 5 | 5 | 100% | 0 s | 0 s–0 s | 0 s |
+| STUCK | 5 | 5 | 100% | 18 s | 16 s–18 s | 0 s |
+| SPIKE | 5 | 5 | 100% | 0 s | 0 s–0 s | 1 s |
+| DRIFT | 5 | 5 | 100% | 30 s | 29 s–30 s | 0 s |
+| MISSING | 5 | 5 | 100% | 2 s | 2 s–2 s | 0 s |
 
-逐样本指标（确认窗口尚未满足的故障样本会计为 FN）：
+### 逐样本多标签指标
 
-| 故障 | TP | FP | FN | Precision | Recall | F1 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| RANGE | 25 | 0 | 0 | 1.000 | 1.000 | 1.000 |
-| STUCK | 113 | 0 | 87 | 1.000 | 0.565 | 0.722 |
-| SPIKE | 5 | 25 | 0 | 0.167 | 1.000 | 0.286 |
-| DRIFT | 302 | 0 | 148 | 1.000 | 0.671 | 0.803 |
-| MISSING | 20 | 0 | 10 | 1.000 | 0.667 | 0.800 |
+| 故障 | TP | FP | TN | FN | Precision | Recall | F1 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| RANGE | 25 | 0 | 4245 | 0 | 1.000 | 1.000 | 1.000 |
+| STUCK | 113 | 0 | 4070 | 87 | 1.000 | 0.565 | 0.722 |
+| SPIKE | 35 | 0 | 4235 | 0 | 1.000 | 1.000 | 1.000 |
+| DRIFT | 302 | 0 | 3820 | 148 | 1.000 | 0.671 | 0.803 |
+| MISSING | 20 | 0 | 4240 | 10 | 1.000 | 0.667 | 0.800 |
 
-基线各故障标志误报数：RANGE 0，STUCK 0，SPIKE 0，DRIFT 0，MISSING 0。
-SPIKE 的 25 个逐样本 FP 出现在注入/恢复边界；其中稳定 OFFSET 注入开始的 5 个样本产生瞬态 SPIKE。正常基线没有 SPIKE 误报。
-OFFSET 盲点探针：5 轮，恒定偏移持续期间没有 OFFSET 检测器；偏移开始时 5/100 个样本触发 SPIKE。偏移撤除会产生反向瞬态；稳定偏移本身不被单通道检测器识别。
+`injection_mode` 表示实验施加原因；`expected_observable_flags` 是依据注入信号、有效性、实验 schedule、冻结配置和已公开 detector 定义独立生成的多标签 truth。生成 truth 时不读取 detector 输出。一个样本可以同时为 RANGE 和 SPIKE。
 
-五类检测器的 episode recall 都是 5/5，但这不等于逐样本无漏报。FREEZE、DRIFT、DROP 需要确认窗口，所以各自存在窗口期 FN；SPIKE 的逐样本 precision 也低于 episode recall。稳定基线为零误报仅适用于本次 SHT30 环境和约 30 分钟观察。
+旧版 SPIKE 的 25 个 FP 均是合法可观测边界：SPIKE recovery 5, DRIFT recovery 5, OUT_OF_RANGE recovery 5, OFFSET entry 5, OFFSET removal 5。旧口径还把 OUT_OF_RANGE 进入边界的 5 个 RANGE+SPIKE 样本排除在 SPIKE confusion matrix 外。修正后 SPIKE 为 `TP=35`、`FP=0`、`FN=0`；本组正式数据没有 genuine SPIKE false positive。
 
-图表（均由 `results/v0.2/` CSV 生成）：
+| 原注入原因 | 阶段 | 可观测 SPIKE 样本 | 检出 | 旧口径 FP 数 |
+| --- | --- | ---: | ---: | ---: |
+| DRIFT | RECOVERY | 5 | 5 | 5 |
+| OFFSET | INJECTION | 5 | 5 | 5 |
+| OFFSET | RECOVERY | 5 | 5 | 5 |
+| OUT_OF_RANGE | INJECTION | 5 | 5 | 0 |
+| OUT_OF_RANGE | RECOVERY | 5 | 5 | 5 |
+| SPIKE | INJECTION | 5 | 5 | 0 |
+| SPIKE | RECOVERY | 5 | 5 | 5 |
 
-![真机数据上的各注入模式时间序列](results/v0.2/plots/fault_timeline.png)
+OFFSET 是 non-target blind-spot probe：恒定 +4 °C 平台没有 OFFSET detector；进入边界 5/5、撤除边界 5/5 触发 SPIKE。稳定偏移本身不被识别。
 
-![各轮故障检测延迟](results/v0.2/plots/detection_latency.png)
+STUCK、DRIFT 和 MISSING 的 sample-level recall 包含故障开始后、达到确认条件前的刻意确认窗口。MISSING `missing_limit=3`，前三个 invalid 样本都按可观测 MISSING truth 计；前两个尚未确认的样本因此是 FN，不是 episode miss。
 
-![轮次召回率与逐样本 precision](results/v0.2/plots/detection_performance.png)
+Clean baseline 观察到 0 / 1,810 个误报样本（30m09s）。Observed sample rate 为 0.000%；这不能证明普遍的零误报率。
 
-![正常基线误报数](results/v0.2/plots/baseline_false_positives.png)
+硬件容量：物理 Flash 16 MiB（`esptool.py flash_id`）；固件配置 2 MiB、image header 2 MiB、固件报告 2 MiB。ESP32-S3 芯片/封装识别报告 embedded PSRAM 8 MiB（不是内存测试）；本固件未启用 PSRAM，运行时可用 0 bytes。
 
-测量固件 commit `6e043c98544d8682371bad9b7b3a2e99c7189696`（git_dirty=false）；配置 SHA-256 `9a1461beb37f50ae4958950222feea186b1f3509c4fcf60de19f5c3606c1da6e`；编译器 `xtensa-esp-elf-gcc (crosstool-NG esp-14.2.0_20260121) 14.2.0`。原始日志：`results/v0.2/raw/sht30_temperature_v02_20260923T111155Z.log`（SHA-256 `80f8a6d4744784e44f35b9c4f0f29d1cf41d764d6c399f99bb1fe71eae746044`）。
-SHT30 temperature_C 已评估；humidity_percent 仅由驱动读取、未评估；BH1750 未测试。
+图表（由 CSV/JSON 生成）：
+
+![真机 SHT30 原始值、注入值、活动区间和检测事件](results/v0.2/plots/fault_timeline.png)
+
+![每轮一个检测延迟点和中位数](results/v0.2/plots/detection_latency.png)
+
+![Episode recall 与逐样本 precision、recall、F1](results/v0.2/plots/detection_performance.png)
+
+![Clean baseline 误报样本摘要](results/v0.2/plots/baseline_false_positives.png)
+
+测量固件 commit `6e043c98544d8682371bad9b7b3a2e99c7189696`（git_dirty=false）；配置 SHA-256 `9a1461beb37f50ae4958950222feea186b1f3509c4fcf60de19f5c3606c1da6e`；编译器 `xtensa-esp-elf-gcc (crosstool-NG esp-14.2.0_20260121) 14.2.0`。原始日志 `results/v0.2/raw/sht30_temperature_v02_20260923T111155Z.log`，SHA-256 `80f8a6d4744784e44f35b9c4f0f29d1cf41d764d6c399f99bb1fe71eae746044`。
+结果文件：[sample_results.csv](results/v0.2/sample_results.csv)、[fault_episodes.csv](results/v0.2/fault_episodes.csv)、[metrics_per_fault.csv](results/v0.2/metrics_per_fault.csv)、[cross_fault_detections.csv](results/v0.2/cross_fault_detections.csv)、[hardware_metadata.json](results/v0.2/hardware_metadata.json)。
+SHT30 `temperature_C` 已评估；`humidity_percent` 由驱动读取但未评估；BH1750 未测试。
 <!-- V0.2_RESULTS_END -->
 
 硬件验证采用加速的实验室 1 Hz 采样计划，并非部署采样间隔。健康分数是启发式严重程度，不是概率；故障标志意味着数据可疑，不等于传感器物理损坏。详见[硬件实验流程](hardware/README.md)。

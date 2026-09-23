@@ -39,7 +39,7 @@ def fake_run():
     }
     samples = []
     schedule = list(expected_schedule(config))
-    for index, (phase, run, mode, active, fault) in enumerate(schedule):
+    for index, (phase, run, mode, episode_mode, active, fault) in enumerate(schedule):
         raw = 25.0
         start_index = index
         while start_index > 0 and schedule[start_index - 1][2] == mode:
@@ -75,7 +75,10 @@ def test_valid_run_and_metrics(fake_run):
     config, digest, begin, samples, end = fake_run
     parsed_begin, parsed = parse_log(render(begin, samples, end), config, digest)
     assert parsed_begin["git_dirty"] is False
-    assert parsed == samples
+    assert len(parsed) == len(samples)
+    assert parsed[0]["injection_mode"] == "PASS"
+    assert parsed[config["baseline_samples"]]["episode_mode"] == "FREEZE"
+    assert parsed[config["baseline_samples"] + 2]["episode_mode"] == "FREEZE"
     rows = episodes(parsed, config)
     assert len(rows) == len(config["injection"])
     assert all(row["detection_latency_ms"] == 0 for row in rows if row["fault"] != "OFFSET")

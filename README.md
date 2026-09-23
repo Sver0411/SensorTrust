@@ -7,44 +7,64 @@ SensorTrust is a portable C11 sensor-health detector. Its five v0.1 fault semant
 <!-- V0.2_RESULTS_START -->
 ## v0.2 physical evaluation (generated from the raw serial log)
 
-Clean physical baseline: 30 min 9 s, 1,810 samples; 0 false-positive samples (0.000%); 0 physical read failures. Sampling was 1 Hz in this laboratory experiment.
+Hardware: ESP32-S3 + SHT30. Evaluated channel: `temperature_C`; this experiment sampled at 1 Hz.
+Clean real-sensor baseline: 1,810 samples / 30m09; 0 / 1,810 observed false-positive samples (0.000%); 0 physical read failures. This describes this observation and does not establish a universal zero false-positive rate.
 
-| Fault | Episodes | Detected | Episode recall | Median detection | p95 detection | Median recovery |
+Five target fault types were injected for five episodes each: 25/25 target episodes detected. OFFSET is a blind-spot probe and is excluded from the five target recalls.
+
+| Fault | Episodes | Detected | Episode recall | Median detection latency | Observed range | Median recovery latency |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| RANGE | 5 | 5 | 100% | 0 ms | 0 ms | 0 ms |
-| STUCK | 5 | 5 | 100% | 18,000 ms | 18,000 ms | 0 ms |
-| SPIKE | 5 | 5 | 100% | 0 ms | 0 ms | 1,000 ms |
-| DRIFT | 5 | 5 | 100% | 30,000 ms | 30,000 ms | 0 ms |
-| MISSING | 5 | 5 | 100% | 2,000 ms | 2,000 ms | 0 ms |
+| RANGE | 5 | 5 | 100% | 0 s | 0 s–0 s | 0 s |
+| STUCK | 5 | 5 | 100% | 18 s | 16 s–18 s | 0 s |
+| SPIKE | 5 | 5 | 100% | 0 s | 0 s–0 s | 1 s |
+| DRIFT | 5 | 5 | 100% | 30 s | 29 s–30 s | 0 s |
+| MISSING | 5 | 5 | 100% | 2 s | 2 s–2 s | 0 s |
 
-Raw sample metrics (confirmation-window misses count as FN):
+### Per-sample multilabel metrics
 
-| Fault | TP | FP | FN | Precision | Recall | F1 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| RANGE | 25 | 0 | 0 | 1.000 | 1.000 | 1.000 |
-| STUCK | 113 | 0 | 87 | 1.000 | 0.565 | 0.722 |
-| SPIKE | 5 | 25 | 0 | 0.167 | 1.000 | 0.286 |
-| DRIFT | 302 | 0 | 148 | 1.000 | 0.671 | 0.803 |
-| MISSING | 20 | 0 | 10 | 1.000 | 0.667 | 0.800 |
+| Fault | TP | FP | TN | FN | Precision | Recall | F1 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| RANGE | 25 | 0 | 4245 | 0 | 1.000 | 1.000 | 1.000 |
+| STUCK | 113 | 0 | 4070 | 87 | 1.000 | 0.565 | 0.722 |
+| SPIKE | 35 | 0 | 4235 | 0 | 1.000 | 1.000 | 1.000 |
+| DRIFT | 302 | 0 | 3820 | 148 | 1.000 | 0.671 | 0.803 |
+| MISSING | 20 | 0 | 4240 | 10 | 1.000 | 0.667 | 0.800 |
 
-Baseline false positives by detector: RANGE 0, STUCK 0, SPIKE 0, DRIFT 0, MISSING 0.
-SPIKE's 25 raw sample false positives occur at injection/recovery boundaries; five appear when the OFFSET probe begins. The clean baseline had no SPIKE flags.
-OFFSET blind-spot probe: 5 episodes. There is no OFFSET detector; SPIKE appeared on 5/100 active biased samples, at the transition into the bias. Removing the bias creates a reverse transient; the sustained constant offset itself is not identified by this single-channel detector.
+`injection_mode` is the causal experiment label. `expected_observable_flags` is independent multilabel ground truth derived from injected signal values, validity, the experiment schedule, the frozen configuration and the published detector definitions. Detector output is not consulted while generating truth. A sample may correctly be both RANGE and SPIKE.
 
-All five detector types reached 5/5 episode recall, but that does not mean zero sample-level misses. FREEZE, DRIFT and DROP have confirmation-window false negatives; SPIKE sample precision is also lower than episode recall. Zero false positives on this baseline applies only to this SHT30 environment and roughly 30-minute observation.
+The old SPIKE confusion matrix's 25 false positives were all observable transitions: SPIKE recovery 5, DRIFT recovery 5, OUT_OF_RANGE recovery 5, OFFSET entry 5, OFFSET removal 5. The old rule also excluded 5 RANGE+SPIKE samples at OUT_OF_RANGE entry from the SPIKE confusion matrix. Corrected SPIKE metrics are `TP=35`, `FP=0`, `FN=0`; no genuine SPIKE false positive was observed in this formal dataset.
 
-Figures (generated from the `results/v0.2/` CSV evidence):
+| Injection cause | Phase | Observable SPIKE samples | Detected | Former FP count |
+| --- | --- | ---: | ---: | ---: |
+| DRIFT | RECOVERY | 5 | 5 | 5 |
+| OFFSET | INJECTION | 5 | 5 | 5 |
+| OFFSET | RECOVERY | 5 | 5 | 5 |
+| OUT_OF_RANGE | INJECTION | 5 | 5 | 0 |
+| OUT_OF_RANGE | RECOVERY | 5 | 5 | 5 |
+| SPIKE | INJECTION | 5 | 5 | 0 |
+| SPIKE | RECOVERY | 5 | 5 | 5 |
 
-![Physical traces under each injection](results/v0.2/plots/fault_timeline.png)
+OFFSET is a non-target blind-spot probe. The constant +4 °C plateau has no dedicated OFFSET detector; SPIKE was emitted on 5/5 entry boundaries and 5/5 removal boundaries. The stable bias itself is not identified.
 
-![Detection latency by episode](results/v0.2/plots/detection_latency.png)
+Sample-level recall for STUCK, DRIFT and MISSING includes the intentional interval after fault onset but before the detector's confirmation condition is met. With `missing_limit=3`, the first two invalid samples are observable MISSING truth and count as sample-level FN; this is not an episode miss.
 
-![Episode recall and sample precision](results/v0.2/plots/detection_performance.png)
+The clean baseline had 0 observed false-positive samples in 1,810 samples over 30m09s. Its observed sample rate was 0.000%; this does not establish a universal zero false-positive rate.
 
-![Clean baseline false positives](results/v0.2/plots/baseline_false_positives.png)
+Hardware capacity: physical flash 16 MiB (`esptool.py flash_id`); firmware-configured capacity 2 MiB, image header 2 MiB, and firmware-reported size 2 MiB. ESP32-S3 chip/package identification reports 8 MiB embedded PSRAM (not a memory test); PSRAM is disabled in this firmware and runtime available PSRAM is 0 bytes.
 
-Measurement firmware commit `6e043c98544d8682371bad9b7b3a2e99c7189696` (`git_dirty=false`); config SHA-256 `9a1461beb37f50ae4958950222feea186b1f3509c4fcf60de19f5c3606c1da6e`; compiler `xtensa-esp-elf-gcc (crosstool-NG esp-14.2.0_20260121) 14.2.0`. Raw log: `results/v0.2/raw/sht30_temperature_v02_20260923T111155Z.log` (SHA-256 `80f8a6d4744784e44f35b9c4f0f29d1cf41d764d6c399f99bb1fe71eae746044`).
-SHT30 temperature_C was evaluated; humidity_percent is read by the driver but was not evaluated; BH1750 was not tested.
+Figures (generated from the CSV/JSON evidence):
+
+![Physical SHT30 raw and injected values, active intervals and detector events](results/v0.2/plots/fault_timeline.png)
+
+![One detection-latency point per episode and the median](results/v0.2/plots/detection_latency.png)
+
+![Episode recall and per-sample precision, recall and F1](results/v0.2/plots/detection_performance.png)
+
+![Clean-baseline observed false-positive summary](results/v0.2/plots/baseline_false_positives.png)
+
+Measurement firmware commit `6e043c98544d8682371bad9b7b3a2e99c7189696` (`git_dirty=false`); config SHA-256 `9a1461beb37f50ae4958950222feea186b1f3509c4fcf60de19f5c3606c1da6e`; compiler `xtensa-esp-elf-gcc (crosstool-NG esp-14.2.0_20260121) 14.2.0`. Raw log `results/v0.2/raw/sht30_temperature_v02_20260923T111155Z.log`, SHA-256 `80f8a6d4744784e44f35b9c4f0f29d1cf41d764d6c399f99bb1fe71eae746044`.
+Evidence files: [sample_results.csv](results/v0.2/sample_results.csv), [fault_episodes.csv](results/v0.2/fault_episodes.csv), [metrics_per_fault.csv](results/v0.2/metrics_per_fault.csv), [cross_fault_detections.csv](results/v0.2/cross_fault_detections.csv), [hardware_metadata.json](results/v0.2/hardware_metadata.json).
+SHT30 `temperature_C` was evaluated; `humidity_percent` is read by the driver but was not evaluated; BH1750 was not tested.
 <!-- V0.2_RESULTS_END -->
 
 Hardware validation uses an accelerated 1 Hz laboratory sampling schedule. It is not the deployment interval. The health score is a heuristic severity score, not a calibrated probability; a detected fault means suspicious data, not proof of a broken sensor.

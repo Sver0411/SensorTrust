@@ -6,8 +6,6 @@
   "config_sha256": "9a1461beb37f50ae4958950222feea186b1f3509c4fcf60de19f5c3606c1da6e",
   "chip": "ESP32-S3",
   "chip_revision": 2,
-  "flash_bytes": 2097152,
-  "psram_bytes": 0,
   "esp_idf": "v5.4.4",
   "sensor": "SHT30",
   "channel": "temperature_C",
@@ -64,5 +62,54 @@
   "toolchain": {
     "compiler_target": "xtensa-esp32s3-elf",
     "compiler_version": "xtensa-esp-elf-gcc (crosstool-NG esp-14.2.0_20260121) 14.2.0"
-  }
+  },
+  "hardware_probe": {
+    "schema": 1,
+    "probe_tool": "esptool.py",
+    "probe_version": "4.12.0",
+    "probe_operations": [
+      "chip_id",
+      "flash_id"
+    ],
+    "chip": {
+      "model": "ESP32-S3",
+      "package": "QFN56",
+      "revision": 2,
+      "reported_features": [
+        "WiFi",
+        "BLE",
+        "Embedded PSRAM 8MB (AP_3v3)"
+      ],
+      "psram_physical_capacity_bytes": 8388608,
+      "psram_capacity_basis": "esptool chip/package identification; not a PSRAM memory test"
+    },
+    "flash": {
+      "physical_bytes": 16777216,
+      "probe_method": "esptool flash_id",
+      "manufacturer_id": "0x1c",
+      "device_id": "0x7118",
+      "configured_bytes": 2097152,
+      "configured_source": "effective ESP-IDF sdkconfig: CONFIG_ESPTOOLPY_FLASHSIZE=2MB",
+      "image_header_bytes": 2097152,
+      "image_header_spi_size_code": 1,
+      "image_header_source": "firmware/build/sensor_trust_firmware.bin byte 3 high nibble; ESP-IDF ESP_IMAGE_FLASH_SIZE_2MB enum",
+      "firmware_reported_bytes": 2097152,
+      "firmware_reported_source": "ST_BEGIN esp_flash_get_size result",
+      "application_image_sha256": "e150923a93821e4762d942cf45d4542ee65b7a093dd433772bfa8677976ed0e9"
+    },
+    "psram": {
+      "enabled_in_firmware": false,
+      "enabled_basis": "no CONFIG_SPIRAM setting in effective sdkconfig; firmware has no PSRAM initialization path",
+      "runtime_available_bytes": 0,
+      "runtime_basis": "ST_BEGIN heap_caps_get_total_size(MALLOC_CAP_SPIRAM)"
+    }
+  },
+  "flash_physical_bytes": 16777216,
+  "flash_configured_bytes": 2097152,
+  "flash_image_header_bytes": 2097152,
+  "flash_firmware_reported_bytes": 2097152,
+  "psram_physical_bytes": 8388608,
+  "psram_physical_capacity_basis": "esptool chip/package identification; not a PSRAM memory test",
+  "psram_enabled": false,
+  "psram_runtime_available_bytes": 0
 }
